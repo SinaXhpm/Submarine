@@ -29,12 +29,23 @@ pub fn in_flatpak() -> bool {
     std::path::Path::new("/.flatpak-info").exists()
 }
 
-/// Static info bundled with the binary. Version comes from CARGO_PKG_VERSION
-/// which Cargo + tauri-action set from the git tag during release builds.
+/// The version this build was released as. The release workflow stamps the
+/// git tag into Cargo.toml, but a Windows build gets numbers only (0.5.0 for
+/// v0.5.0-beta.6: the .msi needs that), so the workflow also sets the full tag
+/// as SUBMARINE_RELEASE_VERSION while building. Without it a Windows beta
+/// couldn't tell beta.6 from beta.7, or from the release.
+pub fn running_version() -> &'static str {
+    match option_env!("SUBMARINE_RELEASE_VERSION") {
+        Some(v) if !v.trim().is_empty() => v.trim(),
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
+/// Static info bundled with the binary: the version from running_version.
 #[tauri::command]
 pub fn app_info() -> AppInfo {
     AppInfo {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: running_version().to_string(),
         updates: updates(),
         github_repo_url: format!("https://github.com/{}", GITHUB_REPO),
         github_releases_url: format!("https://github.com/{}/releases", GITHUB_REPO),
@@ -86,12 +97,14 @@ struct GhRelease {
 /// flag is date-based (and manually overridable), so a hotfix published on an
 /// old line could point it at a lower version than what's actually shipped.
 /// Instead we scan every published, non-prerelease release and pick the highest
-/// SEMVER ourselves, then compare that to `current`. Anonymous calls are rate-
+/// SEMVER ourselves, then compare that to `current`. With `include_beta` (the
+/// "Tell me about beta versions" setting) pre-releases count too. Anonymous calls are rate-
 /// limited to ~60/hour per IP — fine for an occasional check. The timeout is
 /// short so a hung connection can't leave the check spinning.
 #[tauri::command]
-pub async fn check_for_updates() -> Result<UpdateInfo, String> {
-    let current = env!("CARGO_PKG_VERSION").to_string();
+pub async fn check_for_updates(include_beta: Option<bool>) -> Result<UpdateInfo, String> {
+    let current = running_version().to_string();
+    let include_beta = include_beta.unwrap_or(false);
     // The App Store's builds and a Flatpak: nothing is asked, nothing is offered.
     if !updates() {
         return Ok(UpdateInfo { current, latest: None, has_update: false, release_url: None });
@@ -129,11 +142,12 @@ pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     let bytes = crate::cloud::read_capped(resp, 8 * 1024 * 1024).await.map_err(|e| format!("[UPDATE] {}", e))?;
     let releases: Vec<GhRelease> = serde_json::from_slice(&bytes).map_err(|e| format!("[UPDATE] BAD_JSON: {}", e))?;
 
-    // Highest published, non-prerelease semver wins. Drafts are only visible
-    // with auth (we're anonymous) but we skip them defensively all the same.
+    // Highest published semver wins, pre-releases only with include_beta.
+    // Drafts are only visible with auth (we're anonymous) but we skip them
+    // defensively all the same.
     let mut best: Option<(String, String)> = None; // (clean_version, html_url)
     for r in releases {
-        if r.draft || r.prerelease || r.tag_name.is_empty() {
+        if r.draft || (r.prerelease && !include_beta) || r.tag_name.is_empty() {
             continue;
         }
         let clean = r.tag_name.strip_prefix('v').unwrap_or(&r.tag_name).to_string();
@@ -160,25 +174,60 @@ pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     }
 }
 
-/// True when `a > b` under dotted-number compare (ignores any non-numeric
-/// suffix like "-beta"). Robust enough for our semver-tagged releases:
-/// "0.2.0" > "0.1.5", "1.0.0" > "0.9.9". A pre-release suffix on `a`
-/// makes it sort EQUAL to the same base — preferring stable over pre.
+/// True when version `a` is newer than `b`, by semver's order: the numbers
+/// part by part, then a release above its own pre-releases (0.5.0 above
+/// 0.5.0-beta.6), and pre-release parts as numbers when both are (beta.10
+/// above beta.9). Build metadata (+...) doesn't count. Comparing the numbers
+/// only, as before, made 0.5.0 and 0.5.0-beta.6 equal: someone on a beta was
+/// never told about its release.
 fn semver_greater(a: &str, b: &str) -> bool {
-    let strip = |s: &str| s.split(['-', '+']).next().unwrap_or(s).to_string();
-    let parse = |s: String| -> Vec<u64> {
-        s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect()
+    semver_cmp(a, b) == std::cmp::Ordering::Greater
+}
+
+fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let split = |s: &str| -> (Vec<u64>, Option<Vec<String>>) {
+        let s = s.trim();
+        let s = s.split('+').next().unwrap_or(s);
+        let (core, pre) = match s.split_once('-') {
+            Some((core, pre)) => (core, Some(pre.split('.').map(str::to_string).collect())),
+            None => (s, None),
+        };
+        (core.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect(), pre)
     };
-    let aa = parse(strip(a));
-    let bb = parse(strip(b));
-    for i in 0..aa.len().max(bb.len()) {
-        let av = aa.get(i).copied().unwrap_or(0);
-        let bv = bb.get(i).copied().unwrap_or(0);
-        if av != bv {
-            return av > bv;
+    let (an, ap) = split(a);
+    let (bn, bp) = split(b);
+    for i in 0..an.len().max(bn.len()) {
+        let o = an.get(i).copied().unwrap_or(0).cmp(&bn.get(i).copied().unwrap_or(0));
+        if o != Equal {
+            return o;
         }
     }
-    false
+    match (ap, bp) {
+        (None, None) => Equal,
+        (None, Some(_)) => Greater,
+        (Some(_), None) => Less,
+        (Some(ap), Some(bp)) => {
+            for i in 0..ap.len().max(bp.len()) {
+                let o = match (ap.get(i), bp.get(i)) {
+                    (None, None) => Equal,
+                    (None, Some(_)) => Less,
+                    (Some(_), None) => Greater,
+                    (Some(x), Some(y)) => match (x.parse::<u64>(), y.parse::<u64>()) {
+                        (Ok(x), Ok(y)) => x.cmp(&y),
+                        // A number sorts below a word (beta.1 < beta.rc).
+                        (Ok(_), Err(_)) => Less,
+                        (Err(_), Ok(_)) => Greater,
+                        (Err(_), Err(_)) => x.cmp(y),
+                    },
+                };
+                if o != Equal {
+                    return o;
+                }
+            }
+            Equal
+        }
+    }
 }
 
 /// Open a URL in the user's default browser. URL must be http(s) — we
@@ -226,7 +275,34 @@ fn checked_url(url: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::checked_url;
+    use super::{checked_url, semver_greater};
+
+    #[test]
+    fn versions_compare_as_semver_says() {
+        // Numbers part by part.
+        assert!(semver_greater("0.5.1", "0.5.0"));
+        assert!(semver_greater("0.10.0", "0.9.9"));
+        assert!(semver_greater("1.0.0", "0.99.99"));
+        assert!(!semver_greater("0.5.0", "0.5.0"));
+        assert!(!semver_greater("0.3.8", "0.5.0"));
+        // A release is newer than its own betas, and a beta of the next one is
+        // newer than the release before it.
+        assert!(semver_greater("0.5.0", "0.5.0-beta.6"));
+        assert!(!semver_greater("0.5.0-beta.6", "0.5.0"));
+        assert!(semver_greater("0.5.1-beta.1", "0.5.0"));
+        assert!(!semver_greater("0.5.0-beta.6", "0.5.1"));
+        // Beta numbers as numbers.
+        assert!(semver_greater("0.5.0-beta.10", "0.5.0-beta.9"));
+        assert!(semver_greater("0.5.0-beta.7", "0.5.0-beta.6"));
+        assert!(!semver_greater("0.5.0-beta.6", "0.5.0-beta.6"));
+        // Words in order, a number below a word, a longer list above its start.
+        assert!(semver_greater("0.5.0-rc.1", "0.5.0-beta.9"));
+        assert!(semver_greater("0.5.0-beta.rc", "0.5.0-beta.1"));
+        assert!(semver_greater("0.5.0-beta.6.1", "0.5.0-beta.6"));
+        // Build metadata doesn't count.
+        assert!(!semver_greater("0.5.0+build.7", "0.5.0"));
+        assert!(semver_greater("0.5.0+x", "0.5.0-beta.1"));
+    }
 
     #[test]
     fn only_a_parsed_web_address_opens() {

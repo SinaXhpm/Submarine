@@ -10,6 +10,7 @@ import { CloudConfigView, hostOf } from "./SyncServerSetting";
 import logoUrl from "../assets/logo-ui.png";
 import { IS_ANDROID, IS_IOS, IS_MOBILE } from "../util/platform";
 import { PRIVACY_URL } from "../util/links";
+import { readUpdateBeta } from "../util/updateChannel";
 import { openFeedback } from "./Feedback";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
 import { forgetProfileBookmarks } from "../util/sftpBookmarks";
@@ -51,18 +52,20 @@ interface UpdateInfo { current: string; latest: string | null; has_update: boole
 // again on every Lock, and each check downloads GitHub's list of releases and
 // counts against GitHub's limit for anonymous requests (60 an hour per
 // address). A check that failed is asked again on the next visit. The
-// footer's "Check for updates" always asks, and its answer is kept too.
-let keptUpdateCheck: Promise<UpdateInfo | null> | null = null;
-function silentUpdateCheck(): Promise<UpdateInfo | null> {
-  if (keptUpdateCheck) return keptUpdateCheck;
-  const answer: Promise<UpdateInfo | null> = invoke<UpdateInfo>("check_for_updates").catch(() => {
-    if (keptUpdateCheck === answer) keptUpdateCheck = null;
+// footer's "Check for updates" always asks, and its answer is kept too. An
+// answer is for one beta setting (Settings → Updates): with the other one the
+// next visit asks again.
+let keptUpdateCheck: { includeBeta: boolean; answer: Promise<UpdateInfo | null> } | null = null;
+function silentUpdateCheck(includeBeta: boolean): Promise<UpdateInfo | null> {
+  if (keptUpdateCheck && keptUpdateCheck.includeBeta === includeBeta) return keptUpdateCheck.answer;
+  const answer: Promise<UpdateInfo | null> = invoke<UpdateInfo>("check_for_updates", { includeBeta }).catch(() => {
+    if (keptUpdateCheck?.answer === answer) keptUpdateCheck = null;
     return null;
   });
-  keptUpdateCheck = answer;
+  keptUpdateCheck = { includeBeta, answer };
   return answer;
 }
-const keepUpdateCheck = (u: UpdateInfo) => { keptUpdateCheck = Promise.resolve(u); };
+const keepUpdateCheck = (includeBeta: boolean, u: UpdateInfo) => { keptUpdateCheck = { includeBeta, answer: Promise.resolve(u) }; };
 
 // The running version and the project's GitHub page (backend: about::app_info).
 // `updates` is false in the App Store's builds, which don't look on GitHub.
@@ -315,7 +318,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // releases — simply shows nothing.
   useEffect(() => {
     let mounted = true;
-    void silentUpdateCheck().then((u) => { if (mounted && u?.has_update && u.latest) setUpdate(u); });
+    void silentUpdateCheck(readUpdateBeta()).then((u) => { if (mounted && u?.has_update && u.latest) setUpdate(u); });
     return () => { mounted = false; };
   }, []);
 
@@ -344,8 +347,9 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (check === "checking") return;
     setCheck("checking");
     try {
-      const u = await invoke<UpdateInfo>("check_for_updates");
-      keepUpdateCheck(u);
+      const includeBeta = readUpdateBeta();
+      const u = await invoke<UpdateInfo>("check_for_updates", { includeBeta });
+      keepUpdateCheck(includeBeta, u);
       if (u.has_update && u.latest) {
         setUpdate(u);
         setCheck("idle");
