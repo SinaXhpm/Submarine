@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
 import { CloudConfigView, hostOf } from "./SyncServerSetting";
-import logoUrl from "../assets/logo.png";
+import logoUrl from "../assets/logo-ui.png";
 import { IS_ANDROID, IS_IOS, IS_MOBILE } from "../util/platform";
 import { PRIVACY_URL } from "../util/links";
 import { readUpdateBeta } from "../util/updateChannel";
@@ -47,6 +47,26 @@ interface KeptCopy { file: string; when: number; }
 // `has_update` is true only when `latest` is a strictly newer semver than the
 // running build.
 interface UpdateInfo { current: string; latest: string | null; has_update: boolean; release_url: string | null; }
+
+// The silent check's answer, kept until the app is closed: this page mounts
+// again on every Lock, and each check downloads GitHub's list of releases and
+// counts against GitHub's limit for anonymous requests (60 an hour per
+// address). A check that failed is asked again on the next visit. The
+// footer's "Check for updates" always asks, and its answer is kept too. An
+// answer is for one beta setting (Settings → Updates): with the other one the
+// next visit asks again.
+let keptUpdateCheck: { includeBeta: boolean; answer: Promise<UpdateInfo | null> } | null = null;
+function silentUpdateCheck(includeBeta: boolean): Promise<UpdateInfo | null> {
+  if (keptUpdateCheck && keptUpdateCheck.includeBeta === includeBeta) return keptUpdateCheck.answer;
+  const answer: Promise<UpdateInfo | null> = invoke<UpdateInfo>("check_for_updates", { includeBeta }).catch(() => {
+    if (keptUpdateCheck?.answer === answer) keptUpdateCheck = null;
+    return null;
+  });
+  keptUpdateCheck = { includeBeta, answer };
+  return answer;
+}
+const keepUpdateCheck = (includeBeta: boolean, u: UpdateInfo) => { keptUpdateCheck = { includeBeta, answer: Promise.resolve(u) }; };
+
 // The running version and the project's GitHub page (backend: about::app_info).
 // `updates` is false in the App Store's builds, which don't look on GitHub.
 interface AppInfo { version: string; updates: boolean; github_repo_url: string; }
@@ -291,14 +311,15 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 
   useEffect(() => { refreshCloud(); }, [refreshCloud]);
 
-  // Check GitHub for a newer release once per app open (this page mounts on
-  // launch and on every return to the picker). Best-effort and silent: the
-  // fetch+semver-compare happens in Rust (about::check_for_updates), and any
-  // failure — offline, rate-limited, no releases — simply shows nothing.
+  // Check GitHub for a newer release (this page mounts on launch and on every
+  // return to the picker; silentUpdateCheck asks once while the app runs).
+  // Best-effort and silent: the fetch+semver-compare happens in Rust
+  // (about::check_for_updates), and any failure — offline, rate-limited, no
+  // releases — simply shows nothing.
   useEffect(() => {
-    invoke<UpdateInfo>("check_for_updates", { includeBeta: readUpdateBeta() })
-      .then((u) => { if (u.has_update && u.latest) setUpdate(u); })
-      .catch(() => {});
+    let mounted = true;
+    void silentUpdateCheck(readUpdateBeta()).then((u) => { if (mounted && u?.has_update && u.latest) setUpdate(u); });
+    return () => { mounted = false; };
   }, []);
 
   // A link that can't be opened (no browser / URL handler on this device)
@@ -326,7 +347,9 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (check === "checking") return;
     setCheck("checking");
     try {
-      const u = await invoke<UpdateInfo>("check_for_updates", { includeBeta: readUpdateBeta() });
+      const includeBeta = readUpdateBeta();
+      const u = await invoke<UpdateInfo>("check_for_updates", { includeBeta });
+      keepUpdateCheck(includeBeta, u);
       if (u.has_update && u.latest) {
         setUpdate(u);
         setCheck("idle");
@@ -1153,9 +1176,10 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
               title={t("Open the release notes on GitHub")}
               className="group flex items-center gap-1.5 text-[10.5px] text-primary/90 hover:text-primary animate-in fade-in slide-in-from-bottom-1 duration-700"
             >
-              {/* pulsing dot — the "something new" signal */}
+              {/* pulsing dot — the "something new" signal (App.css: three
+                  pings, then still) */}
               <span className="relative flex h-1.5 w-1.5">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/70 opacity-75" />
+                <span className="update-ping absolute inline-flex h-full w-full rounded-full bg-primary/70" />
                 <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
               </span>
               <ArrowUpCircle size={11} className="shrink-0" />

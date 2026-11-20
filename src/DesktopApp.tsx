@@ -12,7 +12,7 @@ import {
 import { useBroadcast } from "./ui/broadcast";
 
 import ProfileSelectPage from "./components/ProfileSelectPage";
-import logoUrl from "./assets/logo.png";
+import logoUrl from "./assets/logo-ui.png";
 import PasswordField from "./components/PasswordField";
 import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
@@ -102,7 +102,6 @@ const hexToRgb = (hex: string) => {
 
 function DesktopApp() {
   const t = useT();
-  const [loading, setLoading] = useState(true);
   const [isUnlocked, setIsUnlocked] = useState(false);
   // Multi-exec broadcast state lives in a shared provider (see App.tsx) so
   // TerminalView instances across every tab can read `enabled` + `targets`
@@ -565,16 +564,14 @@ function DesktopApp() {
     applyFonts(appSettings.terminalFontFamily, appSettings.uiFontFamily);
   }, [appSettings.terminalFontFamily, appSettings.uiFontFamily]);
 
-  useEffect(() => {
-    // Nothing to set up before the first screen:
-    //  - The window's size and position are restored natively by the
-    //    window-state plugin. The page never resizes the window.
-    //  - `isMobile` is driven by `useIsNarrow()` (live viewport hook).
-    //  - The profile picker comes first, so no vault is probed here;
-    //    `dbExists` is set inside `handleProfileSelected` when the user picks
-    //    a profile.
-    setLoading(false);
-  }, []);
+  // Nothing to set up before the first screen, so the profile picker is the
+  // first frame (a "Loading…" screen here cost a render and a black frame):
+  //  - The window's size and position are restored natively by the
+  //    window-state plugin. The page never resizes the window.
+  //  - `isMobile` is driven by `useIsNarrow()` (live viewport hook).
+  //  - The profile picker comes first, so no vault is probed here;
+  //    `dbExists` is set inside `handleProfileSelected` when the user picks
+  //    a profile.
 
   // Stable per-session close handler. Allocated once per (sess.id) pair so
   // SessionView's memo comparison stays cheap and the prop reference doesn't
@@ -2510,8 +2507,6 @@ function DesktopApp() {
   // when the Android soft keyboard opens the visualViewport shrinks and the
   // whole flex chain cascades above the keyboard instead of anchoring to
   // the un-shrunken layout viewport.
-  if (loading) return <div className="h-full bg-black flex items-center justify-center font-mono text-xs text-primary animate-pulse">{t("Loading…")}</div>;
-
   return (
     <div className="h-full w-full bg-background flex flex-col overflow-hidden text-zinc-200 select-none">
       {TitleBar()}

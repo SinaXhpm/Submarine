@@ -140,6 +140,27 @@ select optgroup {
   }
 }
 
+/* The profile picker's "new version" dot: three pings, then it stays still.
+   An endless ping kept the page drawing, and a CPU core busy, for as long as
+   the picker was open. It ends hidden, leaving the solid dot under it. */
+@keyframes update-ping {
+  75%,
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+.update-ping {
+  opacity: 0.75;
+  animation: update-ping 1s cubic-bezier(0, 0, 0.2, 1) 3 forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-ping {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /* `to` intentionally omits `transform` so the element settles back to
    `transform: none` after the animation. A lingering transform (even
    translateY(0)) creates a containing block that breaks `position: fixed`

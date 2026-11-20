@@ -169,35 +169,50 @@ fn same_local_name(a: &str, b: &str) -> bool {
 
 type CancelMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<AtomicBool>>>>;
 
-/// Keeps a job's cancel flag in the registry while the job runs.
+/// Keeps a job's cancel flag in the registry while the job runs, under each
+/// of its ids.
 struct JobGuard {
     map: CancelMap,
-    id: String,
+    ids: Vec<String>,
 }
 
 impl Drop for JobGuard {
     fn drop(&mut self) {
         let map = Arc::clone(&self.map);
-        let id = std::mem::take(&mut self.id);
+        let ids = std::mem::take(&mut self.ids);
         match tokio::runtime::Handle::try_current() {
             Ok(rt) => {
                 rt.spawn(async move {
-                    map.lock().await.remove(&id);
+                    let mut m = map.lock().await;
+                    for id in &ids {
+                        m.remove(id);
+                    }
                 });
             }
             Err(_) => {
                 if let Ok(mut m) = map.try_lock() {
-                    m.remove(&id);
+                    for id in &ids {
+                        m.remove(id);
+                    }
                 }
             }
         }
     }
 }
 
+/// The id a job on a server also has in the registry: the tab's Disconnect
+/// cancels what starts with `<session>~` (cancel_session_transfers).
+fn session_job_id(session_id: &str, job_id: &str) -> String {
+    format!("{session_id}~job-{job_id}")
+}
+
 /// Registers `job_id` and returns its cancel flag. The pane picks the id, so
 /// it can cancel before the call returns. An id that is already in the
-/// registry (another job, or a transfer) is refused, not shared.
-async fn start_job(state: &SshState, job_id: &str) -> Result<(Arc<AtomicBool>, JobGuard), String> {
+/// registry (another job, or a transfer) is refused, not shared. A job on a
+/// server (`session_id`) is also there as `session_job_id`, so the tab's
+/// Disconnect stops it: it holds a channel of its own, and went on (keeping
+/// the connection up) after the Disconnect.
+async fn start_job(state: &SshState, job_id: &str, session_id: Option<&str>) -> Result<(Arc<AtomicBool>, JobGuard), String> {
     let id_ok = !job_id.is_empty()
         && job_id.len() <= 64
         && job_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
@@ -209,8 +224,12 @@ async fn start_job(state: &SshState, job_id: &str) -> Result<(Arc<AtomicBool>, J
     if map.contains_key(job_id) {
         return Err("A job with this id is already running".into());
     }
-    map.insert(job_id.to_string(), Arc::clone(&flag));
-    Ok((flag, JobGuard { map: Arc::clone(&state.transfer_cancels), id: job_id.to_string() }))
+    let mut ids = vec![job_id.to_string()];
+    ids.extend(session_id.map(|sid| session_job_id(sid, job_id)));
+    for id in &ids {
+        map.insert(id.clone(), Arc::clone(&flag));
+    }
+    Ok((flag, JobGuard { map: Arc::clone(&state.transfer_cancels), ids }))
 }
 
 fn cancelled() -> String {
@@ -513,7 +532,7 @@ pub async fn local_archive(
             return Err("A folder with that name already exists".into());
         }
     }
-    let (cancel, _job) = start_job(&state, &job_id).await?;
+    let (cancel, _job) = start_job(&state, &job_id, None).await?;
     tokio::task::spawn_blocking(move || pack_local(&base, &names, &part_path(&dest), &dest, format, &cancel))
         .await
         .map_err(|e| e.to_string())??;
@@ -921,7 +940,7 @@ pub async fn local_extract(
     // root is fine to extract in. Every path that gets written is checked.
     let base = dir.canonicalize().map_err(|e| format!("Invalid folder: {}", e))?;
     let archive = base.join(&name);
-    let (cancel, _job) = start_job(&state, &job_id).await?;
+    let (cancel, _job) = start_job(&state, &job_id, None).await?;
     tokio::task::spawn_blocking(move || extract_local(&base, &archive, folder.as_deref(), format, &cancel))
         .await
         .map_err(|e| e.to_string())??;
@@ -1359,7 +1378,7 @@ pub async fn sftp_archive(
         return Err("Too many items for one archive; archive the folder that holds them instead".into());
     }
     let session = job_session(&state, &session_id).await?;
-    let (cancel, _job) = start_job(&state, &job_id).await?;
+    let (cancel, _job) = start_job(&state, &job_id, Some(&session_id)).await?;
     let run = run_remote_job(&session, &archive_script(&dir, &names, &name, format, overwrite), &cancel).await?;
     remote_outcome(run, if format == Format::Zip { "zip" } else { "tar" }, &name)
 }
@@ -1377,7 +1396,7 @@ pub async fn sftp_extract(
     let format = check_extract(&name, folder.as_deref(), remote_name_ok)?;
     check_remote_dir(&dir)?;
     let session = job_session(&state, &session_id).await?;
-    let (cancel, _job) = start_job(&state, &job_id).await?;
+    let (cancel, _job) = start_job(&state, &job_id, Some(&session_id)).await?;
     let run = run_remote_job(&session, &extract_script(&dir, &name, folder.as_deref(), format), &cancel).await?;
     remote_outcome(run, if format == Format::Zip { "unzip" } else { "tar" }, &name)
 }
@@ -1385,6 +1404,28 @@ pub async fn sftp_extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A job on a server stops with its tab's Disconnect, not another tab's,
+    // and leaves the registry under both of its ids when it ends.
+    #[tokio::test]
+    async fn a_server_job_stops_with_its_tabs_disconnect() {
+        let state = SshState::new();
+        let (mine, guard) = start_job(&state, "job-a", Some("session-1")).await.unwrap();
+        let (other, _other_guard) = start_job(&state, "job-b", Some("session-10")).await.unwrap();
+        let (local, _local_guard) = start_job(&state, "job-c", None).await.unwrap();
+        assert!(start_job(&state, "job-a", Some("session-2")).await.is_err(), "an id in use is refused");
+        crate::cancel_session_transfers(&state, "session-1").await;
+        assert!(mine.load(Ordering::Relaxed));
+        assert!(!other.load(Ordering::Relaxed), "session-10 is another tab");
+        assert!(!local.load(Ordering::Relaxed));
+        drop(guard);
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        let map = state.transfer_cancels.lock().await;
+        assert!(!map.contains_key("job-a") && !map.contains_key(&session_job_id("session-1", "job-a")), "{:?}", map.keys().collect::<Vec<_>>());
+        assert!(map.contains_key("job-b") && map.contains_key(&session_job_id("session-10", "job-b")));
+    }
 
     fn temp_root(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("submarine-{}-test-{}", tag, std::process::id()));
