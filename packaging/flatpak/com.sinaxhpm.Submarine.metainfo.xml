@@ -40,19 +40,19 @@
   <screenshots>
     <screenshot type="default">
       <caption>A terminal with the SFTP file browser beside it</caption>
-      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/main/docs/screenshots/hero.png</image>
+      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/v0.5.1/docs/screenshots/hero.png</image>
     </screenshot>
     <screenshot>
       <caption>Live monitoring of several servers</caption>
-      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/main/docs/screenshots/monitor.png</image>
+      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/v0.5.1/docs/screenshots/monitor.png</image>
     </screenshot>
     <screenshot>
       <caption>A server's connection settings</caption>
-      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/main/docs/screenshots/add-server.png</image>
+      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/v0.5.1/docs/screenshots/add-server.png</image>
     </screenshot>
   </screenshots>
   <releases>
-    <release version="0.4.0" date="2026-10-30">
+    <release version="0.5.1" date="2026-11-20">
       <description>
         <p>First version on Flathub.</p>
       </description>
