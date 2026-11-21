@@ -406,7 +406,7 @@
           "detail": "Android 7.0以降 · .apk"
         }
       ],
-      "betaNote": "このページは、バージョン0.5について説明しています。0.5は最終テスト中です。リリースされるまで、「ダウンロード」ボタンから入手できるのは、最新のリリース版であるバージョン0.3.8です。0.5のベータ版は、<a href=\"{releasesUrl}\">GitHub</a>にプレリリースとして公開されているほか、iPhone、iPad、Mac向けには<a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>で配布しています。バージョン0.3.8にはターミナル、ファイル転送、トンネル、監視、同期がありますが、リモートデスクトップ、Telnet、Windows Helloや指紋によるロック解除、SSHエージェント、フォルダーの比較など、0.5で追加される機能はありません。0.5からは、Windows向けにポータブル版の.zipも提供されます。",
+      "betaNote": "「ダウンロード」ボタンを押すと、<a href=\"{releasesUrl}\">GitHub</a>の最新リリースが開きます。iPhone、iPad、Mac向けには<a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>でも配布しています。",
       "verifyTitle": "ダウンロードしたファイルの確認",
       "verify": [
         "バージョン0.5以降、各リリースには、すべてのダウンロードファイルのチェックサムを記載したSHA256SUMSファイルが含まれます。",
