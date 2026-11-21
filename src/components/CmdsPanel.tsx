@@ -255,6 +255,24 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setEdit({ kind: "note", id: n.id, title: n.title || "", body: n.body || "" });
   };
 
+  // A new draft is added once. Refresh saves a whole draft and leaves it open,
+  // and Lock or closing the panel then saves what is open again: an edit can
+  // be saved twice, an add would make a second copy. Once added, the draft
+  // closes; its row is in the list after the reload.
+  const addedDrafts = useRef(new WeakSet<EditTarget>());
+  const addOnce = async (target: EditTarget, add: () => Promise<unknown>): Promise<void> => {
+    if (addedDrafts.current.has(target)) return;
+    addedDrafts.current.add(target);
+    try {
+      await add();
+    } catch (e) {
+      addedDrafts.current.delete(target);
+      throw e;
+    }
+    if (editRef.current === target) editRef.current = null;
+    setEdit((cur) => (cur === target ? null : cur));
+  };
+
   // Start a new command draft, scoped to this server by default (when the
   // panel has one) so it lands under "For this server" once saved.
   const beginAddCommand = () => {
@@ -276,7 +294,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
       const scope = newScope === "this" && scopeIds?.server
         ? scopeToJson({ servers: [scopeIds.server], folders: [] })
         : null;
-      await invoke("add_command", { title: target.title, content: target.body, scope, isSecret: target.is_secret, tags: target.tags || null });
+      await addOnce(target, () => invoke("add_command", { title: target.title, content: target.body, scope, isSecret: target.is_secret, tags: target.tags || null }));
       return;
     }
     const o = originalForEdit(target);
@@ -301,7 +319,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   // reload after an add.
   const persistNote = async (target: Extract<EditTarget, { kind: "note" }>): Promise<void> => {
     if (target.id === null) {
-      await invoke("add_note", { title: target.title, body: target.body });
+      await addOnce(target, () => invoke("add_note", { title: target.title, body: target.body }));
     } else {
       await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
       setNotes((prev) => prev.map((n) => n.id === target.id ? { ...n, title: target.title, body: target.body } : n));
@@ -579,6 +597,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               disabled={loading}
               className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all disabled:opacity-50"
               title={tab === "commands" ? t("Add command") : t("Add note")}
+              aria-label={tab === "commands" ? t("Add command") : t("Add note")}
             >
               <Plus size={14} />
             </button>

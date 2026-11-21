@@ -1952,6 +1952,7 @@
   "This profile syncs with {other}, not with {current}, so it doesn't sync now.": "Bu profil {current} sunucusuyla değil, {other} sunucusuyla eşitlenir; bu yüzden şu anda eşitlenmiyor.",
   "This replaces opening automatically.": "Otomatik açmanın yerini alır.",
   "This replaces Windows Hello for this profile.": "Bu profilde Windows Hello'nun yerini alır.",
+  "This server": "Bu sunucu",
   "This server doesn't answer the question the delay is measured with.": "Bu sunucu, gecikmenin ölçüldüğü sorguya yanıt vermiyor.",
   "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.": "Bu sunucuda SFTP yok, bu yüzden dosyalar kabuk komutlarıyla aktarılır. Her şey aynı şekilde çalışır, yalnızca daha yavaştır. OpenWrt'de `opkg install openssh-sftp-server` komutu SFTP ekler.",
   "This server has none of the service managers the app works with: systemd, OpenRC or OpenWrt's init scripts. It likely uses another init system, such as runit.": "Bu sunucuda uygulamanın birlikte çalıştığı hizmet yöneticilerinden hiçbiri yok: systemd, OpenRC veya OpenWrt'nin init betikleri. Büyük olasılıkla runit gibi başka bir init sistemi kullanıyor.",

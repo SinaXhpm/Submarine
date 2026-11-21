@@ -1952,6 +1952,7 @@
   "This profile syncs with {other}, not with {current}, so it doesn't sync now.": "このプロファイルの同期先は{current}ではなく{other}のため、現在は同期されません。",
   "This replaces opening automatically.": "自動で開く設定の代わりにこちらを使います。",
   "This replaces Windows Hello for this profile.": "このプロファイルでは、Windows Helloの代わりにこちらを使います。",
+  "This server": "このサーバー",
   "This server doesn't answer the question the delay is measured with.": "このサーバーは、遅延の測定に使う問い合わせに応答しません。",
   "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.": "このサーバーにはSFTPがないため、ファイルはシェルコマンドで転送されます。動作はすべて同じですが、速度が遅くなります。OpenWrtでは、`opkg install openssh-sftp-server`でSFTPを追加できます。",
   "This server has none of the service managers the app works with: systemd, OpenRC or OpenWrt's init scripts. It likely uses another init system, such as runit.": "このサーバーには、アプリが対応しているサービスマネージャー（systemd、OpenRC、OpenWrt の init スクリプト）がありません。runit など、別の init システムを使っている可能性があります。",

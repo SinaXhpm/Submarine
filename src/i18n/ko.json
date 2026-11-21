@@ -1952,6 +1952,7 @@
   "This profile syncs with {other}, not with {current}, so it doesn't sync now.": "이 프로필은 {current} 서버가 아니라 {other} 서버와 동기화하므로 지금은 동기화되지 않습니다.",
   "This replaces opening automatically.": "자동 열기 대신 이 방식을 사용합니다.",
   "This replaces Windows Hello for this profile.": "이 프로필에서는 Windows Hello 대신 이 방식을 사용합니다.",
+  "This server": "이 서버",
   "This server doesn't answer the question the delay is measured with.": "이 서버는 지연 시간 측정에 쓰는 요청에 응답하지 않습니다.",
   "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.": "이 서버에는 SFTP가 없어서 파일을 셸 명령으로 주고받습니다. 기능은 모두 같고 속도만 느립니다. OpenWrt에서는 `opkg install openssh-sftp-server` 명령으로 SFTP를 추가할 수 있습니다.",
   "This server has none of the service managers the app works with: systemd, OpenRC or OpenWrt's init scripts. It likely uses another init system, such as runit.": "이 서버에는 앱이 지원하는 서비스 관리자(systemd, OpenRC, OpenWrt의 init 스크립트)가 없습니다. runit 같은 다른 init 시스템을 사용하는 것 같습니다.",
