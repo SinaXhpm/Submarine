@@ -11,7 +11,7 @@ import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
-import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
+import { DEFAULT_FONT_STACK, fontFamilyCss, keepInPinchRange, pinchFontSize, readFontFamily, readFontSize, requestFontSize } from '../util/terminalFont';
 import { readScrollback } from '../util/terminalScrollback';
 import { TERMINAL_CLEAR, TERMINAL_PASTE, clearTerminal, withoutPasteControls, type TerminalPaste } from '../util/pasteText';
 import { TERMINAL_READ, TERMINAL_READ_REPLY, type TerminalRead, type TerminalReadReply } from '../util/terminalRead';
@@ -20,7 +20,7 @@ import { readUseLocalShell } from '../util/terminalShell';
 import { holdTerminalInput, writeTerminal } from '../util/terminalWrite';
 import { readUseSshAgent } from '../util/sshAgent';
 import { readSendKeepalives } from '../util/sessionKeep';
-import { IS_MOBILE, IS_ANDROID, IS_MAC } from '../util/platform';
+import { IS_MOBILE, IS_ANDROID, IS_IOS, IS_MAC } from '../util/platform';
 import {
   TERMINAL_SHORTCUTS, comboOf, isWebviewEditKey, leftToWebview, matchShortcut, reachesTerminal, shortcutFor,
   type ShortcutAction,
@@ -186,6 +186,17 @@ const CURSOR_BLINK_IDLE_MS = 10_000;
 // At the shell, a key starts a blink again that a program stopped, though not
 // more often than this (see markUsed).
 const BLINK_RESTART_MS = 1_000;
+// A pinch, by touch or on a trackpad, changes the text size at most this
+// often (see zoomTo), and only once the fingers have moved this much nearer or
+// apart.
+const ZOOM_EVERY_MS = 100;
+const PINCH_DEAD_ZONE = 0.05;
+// Ctrl + wheel (see onZoomWheel): a move at least this long is a mouse wheel's
+// notch, one size; shorter ones are a trackpad's, a size per WHEEL_PX_PER_SIZE
+// of them, and a pause this long ends their run.
+const WHEEL_NOTCH_PX = 30;
+const WHEEL_PX_PER_SIZE = 5;
+const WHEEL_RUN_GAP_MS = 150;
 
 const TerminalView = ({
   sessionId,
@@ -1581,7 +1592,7 @@ const TerminalView = ({
       const touch = IS_MOBILE || lastPointerType === 'touch' || (ev as PointerEvent).pointerType === 'touch';
       const pane = terminalRef.current?.parentElement?.getBoundingClientRect();
       if (touch && pane) {
-        if (disabledRef.current) return;
+        if (disabledRef.current || pinched) return;
         // Kept inside the pane: the button is drawn above the finger.
         setPasteAt({
           x: Math.min(Math.max(ev.clientX - pane.left, 64), Math.max(pane.width - 64, 64)),
@@ -1606,13 +1617,110 @@ const TerminalView = ({
     // A second finger ends the swipe.
     let swipeY: number | null = null;
     let swipeRest = 0;
+    // The text size by a pinch, Ctrl + wheel or a trackpad (#372): the saved
+    // size of Settings → Terminal configuration (util/terminalFont), so every
+    // terminal follows. A pinch's sizes go out in whole steps, at most every
+    // ZOOM_EVERY_MS, since each one refits the terminals and resizes them on
+    // the server too; its last one goes out when it ends.
+    let zoomSize = 0;
+    let zoomSent = 0;
+    let zoomTimer: number | undefined;
+    const sendZoom = () => {
+      if (zoomSize === zoomSent) return;
+      zoomSent = zoomSize;
+      requestFontSize({ size: zoomSize });
+    };
+    const zoomTick = () => {
+      zoomTimer = undefined;
+      if (zoomSize === zoomSent) return;
+      sendZoom();
+      zoomTimer = window.setTimeout(zoomTick, ZOOM_EVERY_MS);
+    };
+    const zoomFrom = (size: number) => { zoomSize = zoomSent = size; };
+    const zoomTo = (size: number) => {
+      if (size === zoomSize) return;
+      zoomSize = size;
+      if (zoomTimer === undefined) zoomTick();
+    };
+    const zoomDone = () => {
+      if (zoomTimer !== undefined) window.clearTimeout(zoomTimer);
+      zoomTimer = undefined;
+      sendZoom();
+    };
+    // Two fingers that pinch. From the second finger until the last one is
+    // up, xterm gets no moves (it would scroll), nor does the webview (it would
+    // zoom the page), and the finger left doesn't swipe.
+    let pinch: { apart: number; size: number; moved: boolean } | null = null;
+    let pinched = false;
+    const fingersApart = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const endPinch = () => {
+      if (!pinch) return;
+      pinch = null;
+      zoomDone();
+    };
+    // xterm draws each row as an element of its own, and a new size makes
+    // them anew. A finger's moves and its lift go on to the element it landed
+    // on, also once that has left the page, and then nothing above it hears
+    // them: the pinch would stop at its first step. So during a pinch the
+    // elements under the fingers are listened to as well, for the events that
+    // no longer come through the terminal.
+    const fingerTargets = new Set<EventTarget>();
+    const outside = (ev: Event) => !terminalRef.current?.contains(ev.target as Node);
+    const onLostMove = (ev: Event) => { if (outside(ev)) onTouchMove(ev as TouchEvent); };
+    const onLostEnd = (ev: Event) => { if (outside(ev)) onTouchEnd(ev as TouchEvent); };
+    const followFingers = (touches: TouchList) => {
+      for (let i = 0; i < touches.length; i++) {
+        const el = touches[i].target;
+        if (fingerTargets.has(el)) continue;
+        fingerTargets.add(el);
+        el.addEventListener('touchmove', onLostMove, { passive: false });
+        el.addEventListener('touchend', onLostEnd);
+        el.addEventListener('touchcancel', onLostEnd);
+      }
+    };
+    const unfollowFingers = () => {
+      fingerTargets.forEach((el) => {
+        el.removeEventListener('touchmove', onLostMove);
+        el.removeEventListener('touchend', onLostEnd);
+        el.removeEventListener('touchcancel', onLostEnd);
+      });
+      fingerTargets.clear();
+    };
     const onTouchStart = (ev: TouchEvent) => {
+      // A first finger: what came before is over, also if its lift was lost.
+      if (ev.touches.length === 1) {
+        endPinch();
+        pinched = false;
+        unfollowFingers();
+      }
+      if (ev.touches.length === 2) {
+        pinched = true;
+        swipeY = null;
+        followFingers(ev.touches);
+        pinch = { apart: Math.max(fingersApart(ev.touches), 1), size: readFontSize(), moved: false };
+        zoomFrom(pinch.size);
+        return;
+      }
+      // A third finger ends the pinch.
+      endPinch();
+      if (pinched) return;
       swipeRest = 0;
       swipeY = ev.touches.length === 1 && (programHasMouse() || term.buffer.active.type === 'alternate')
         ? ev.touches[0].clientY
         : null;
     };
     const onTouchMove = (ev: TouchEvent) => {
+      if (pinched) {
+        if (ev.cancelable) ev.preventDefault();
+        ev.stopPropagation();
+        if (!pinch || ev.touches.length !== 2) return;
+        const scale = fingersApart(ev.touches) / pinch.apart;
+        // Two fingers that land and rest change nothing.
+        if (!pinch.moved && Math.abs(scale - 1) < PINCH_DEAD_ZONE) return;
+        pinch.moved = true;
+        zoomTo(pinchFontSize(pinch.size, scale));
+        return;
+      }
       if (swipeY === null) return;
       const screen = term.element?.querySelector('.xterm-screen');
       if (ev.touches.length !== 1 || !screen) {
@@ -1640,7 +1748,62 @@ const TerminalView = ({
         }));
       }
     };
-    const onTouchEnd = () => { swipeY = null; };
+    const onTouchEnd = (ev: TouchEvent) => {
+      swipeY = null;
+      if (ev.touches.length < 2) endPinch();
+      if (ev.touches.length === 0) {
+        pinched = false;
+        unfollowFingers();
+      }
+    };
+    // A Mac's trackpad pinch comes as WebKit's gesture events, with the scale
+    // since it began. iOS sends them too, beside the touches the pinch above
+    // follows, so there they are only cancelled (they'd zoom the page).
+    let gesture: { size: number; moved: boolean } | null = null;
+    const onGestureStart = (ev: Event) => {
+      ev.preventDefault();
+      if (IS_IOS || pinched) return;
+      gesture = { size: readFontSize(), moved: false };
+      zoomFrom(gesture.size);
+    };
+    const onGestureChange = (ev: Event) => {
+      ev.preventDefault();
+      const scale = (ev as Event & { scale?: unknown }).scale;
+      if (!gesture || typeof scale !== 'number') return;
+      if (!gesture.moved && Math.abs(scale - 1) < PINCH_DEAD_ZONE) return;
+      gesture.moved = true;
+      zoomTo(pinchFontSize(gesture.size, scale));
+    };
+    const onGestureEnd = (ev: Event) => {
+      ev.preventDefault();
+      if (!gesture) return;
+      gesture = null;
+      zoomDone();
+    };
+    // Ctrl + wheel over the terminal, as in Windows Terminal (⌘ + wheel on a
+    // Mac as well), instead of a scroll. A mouse wheel's notch is one size. A
+    // trackpad's pinch on Windows comes as a run of short Ctrl + wheel moves:
+    // that follows the fingers like a pinch, from the size the run began at.
+    let wheelRun: { size: number; px: number; at: number } | null = null;
+    const onZoomWheel = (ev: WheelEvent) => {
+      if (!(ev.ctrlKey || (IS_MAC && ev.metaKey)) || !ev.deltaY) return;
+      if (ev.cancelable) ev.preventDefault();
+      ev.stopPropagation();
+      if (gesture) return;
+      if (ev.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || Math.abs(ev.deltaY) >= WHEEL_NOTCH_PX) {
+        wheelRun = null;
+        requestFontSize({ step: ev.deltaY < 0 ? 1 : -1 });
+        return;
+      }
+      const now = performance.now();
+      if (!wheelRun || now - wheelRun.at > WHEEL_RUN_GAP_MS) {
+        wheelRun = { size: readFontSize(), px: 0, at: now };
+        zoomFrom(wheelRun.size);
+      }
+      wheelRun.at = now;
+      wheelRun.px += ev.deltaY;
+      zoomTo(keepInPinchRange(wheelRun.size, wheelRun.size - wheelRun.px / WHEEL_PX_PER_SIZE));
+    };
     // A key held down while the focus moved here (Enter on a panel's close
     // button) goes on repeating into the terminal. It wasn't pressed for the
     // shell, so its repeats are dropped until a key goes down here. Keys an
@@ -1775,6 +1938,11 @@ const TerminalView = ({
     terminalRef.current.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
     terminalRef.current.addEventListener('touchend', onTouchEnd, true);
     terminalRef.current.addEventListener('touchcancel', onTouchEnd, true);
+    terminalRef.current.addEventListener('gesturestart', onGestureStart, { capture: true, passive: false });
+    terminalRef.current.addEventListener('gesturechange', onGestureChange, { capture: true, passive: false });
+    terminalRef.current.addEventListener('gestureend', onGestureEnd, { capture: true, passive: false });
+    // Before xterm's own wheel handler, which would scroll.
+    terminalRef.current.addEventListener('wheel', onZoomWheel, { capture: true, passive: false });
     // A paste from outside the terminal (see TERMINAL_PASTE). Text only to be
     // pasted (the Library's Paste, the AI's Insert) was asked about as a
     // paste; where each of its lines would run as it lands, that is asked
@@ -2041,7 +2209,13 @@ const TerminalView = ({
         container.removeEventListener('touchmove', onTouchMove, true);
         container.removeEventListener('touchend', onTouchEnd, true);
         container.removeEventListener('touchcancel', onTouchEnd, true);
+        container.removeEventListener('gesturestart', onGestureStart, true);
+        container.removeEventListener('gesturechange', onGestureChange, true);
+        container.removeEventListener('gestureend', onGestureEnd, true);
+        container.removeEventListener('wheel', onZoomWheel, true);
       }
+      if (zoomTimer !== undefined) window.clearTimeout(zoomTimer);
+      unfollowFingers();
       document.removeEventListener('mouseup', onDocMouseUp, true);
       window.removeEventListener('blur', onWindowBlur);
       window.removeEventListener(TERMINAL_PASTE, onPasteRequest);

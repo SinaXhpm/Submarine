@@ -24,7 +24,7 @@ import { RenameInput } from "./ui/renameInput";
 import { forgetServerBookmarks } from "./util/sftpBookmarks";
 import { useIsNarrow } from "./hooks/useViewport";
 import { IS_MOBILE } from "./util/platform";
-import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
+import { FONT_FAMILY_KEY, FONT_SIZE_KEY, FONT_SIZE_REQUEST, readFontFamily, readFontSize, requestedFontSize } from "./util/terminalFont";
 import { UI_FONT_FAMILY_KEY, applyFonts, readUiFontFamily } from "./util/uiFont";
 import { SCROLLBACK_KEY, readScrollback } from "./util/terminalScrollback";
 import {
@@ -563,6 +563,19 @@ function DesktopApp() {
     // users have to close+reopen every terminal to see a size change.
     window.dispatchEvent(new CustomEvent('submarine-settings-changed'));
   }, [appSettings]);
+
+  // A pinch on a terminal and the key bar's text-size keys (util/terminalFont).
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const request = (e as CustomEvent).detail;
+      setAppSettings((s) => {
+        const size = requestedFontSize(s.terminalFontSize, request);
+        return size === s.terminalFontSize ? s : { ...s, terminalFontSize: size };
+      });
+    };
+    window.addEventListener(FONT_SIZE_REQUEST, onRequest);
+    return () => window.removeEventListener(FONT_SIZE_REQUEST, onRequest);
+  }, []);
 
   // The interface font and the font for text in columns (util/uiFont): set on
   // the page only when one of the two faces changes, since a change restyles
