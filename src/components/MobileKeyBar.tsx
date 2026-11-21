@@ -2,8 +2,9 @@
 // keyboard, exposing the keys Android (and the iOS soft keyboard) don't
 // surface but every terminal user needs. One row holds the ones used most:
 // Ctrl, Esc, Tab and the arrows. A second row, opened by the chevron, adds
-// Alt, Shift and the symbols a shell line is full of but a phone keyboard
-// hides on another page: | ~ / -. Every key fits on screen, with no scrolling.
+// Alt, Shift, the symbols a shell line is full of but a phone keyboard hides
+// on another page (| ~ / -), and smaller and larger text (#372), the same
+// size as Settings' − / +. Every key fits on screen, with no scrolling.
 //
 // Modifier semantics match Termux / iSH:
 //   - tap once   → "armed"  (highlight in primary color, fires on next typed char)
@@ -14,9 +15,10 @@
 // TerminalView (which owns the xterm `onData` callback). This component
 // only renders state + forwards events.
 
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import { ChevronUp } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { ChevronUp, ZoomIn, ZoomOut } from "lucide-react";
 import { useT } from "../i18n";
+import { requestFontSize } from "../util/terminalFont";
 
 // A held arrow repeats as a held key on a keyboard does (#324): once when
 // pressed, then every HOLD_EVERY ms from HOLD_DELAY on, until the finger lifts.
@@ -100,13 +102,15 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
   // by on its mousedown, but a long press is a gesture of the webview's own,
   // which takes the focus from the terminal and the keyboard goes. A touch
   // that starts on an arrow is cancelled here, before the webview sees it:
-  // the arrow works from its pointer events, which still come.
+  // the arrow works from its pointer events, which still come. So is one on a
+  // text-size key: a tap there would bring the keyboard up, put away to see
+  // more of the terminal, when the size is all that should change.
   const barRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const bar = barRef.current;
     if (!bar) return;
     const onTouch = (e: TouchEvent) => {
-      if ((e.target as Element | null)?.closest?.("[data-held-key]")) e.preventDefault();
+      if ((e.target as Element | null)?.closest?.("[data-held-key], [data-size-key]")) e.preventDefault();
     };
     bar.addEventListener("touchstart", onTouch, { passive: false });
     return () => bar.removeEventListener("touchstart", onTouch);
@@ -144,20 +148,22 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
   // when the finger lifts as a click does, so the click after a press sends
   // nothing more; one from the keyboard (detail 0) still sends. A long press
   // brings up no menu and selects nothing.
-  const keyBtn = ({ label, onClick, title, symbol, held }: { label: string; onClick: () => void; title?: string; symbol?: boolean; held?: SpecialKey }) => (
+  // `size`: a text-size key. It goes when pressed too, once.
+  const keyBtn = ({ label, onClick, title, symbol, held, size }: { label: ReactNode; onClick: () => void; title?: string; symbol?: boolean; held?: SpecialKey; size?: boolean }) => (
     <button
       type="button"
-      onClick={held ? (e) => { if (e.detail === 0) onClick(); } : onClick}
-      onPointerDown={held ? (e) => { if (e.button === 0) startHold(held); } : undefined}
-      onContextMenu={held ? (e) => e.preventDefault() : undefined}
+      onClick={held || size ? (e) => { if (e.detail === 0) onClick(); } : onClick}
+      onPointerDown={held ? (e) => { if (e.button === 0) startHold(held); } : size ? (e) => { if (e.button === 0) onClick(); } : undefined}
+      onContextMenu={held || size ? (e) => e.preventDefault() : undefined}
       onMouseDown={(e) => e.preventDefault()}
       onTouchStart={(e) => e.preventDefault()}
       data-held-key={held ? "" : undefined}
+      data-size-key={size ? "" : undefined}
       title={title}
       aria-label={title}
       className={`flex-1 min-w-0 h-9 rounded-md font-bold border border-transparent bg-white/[0.05] text-zinc-300 hover:bg-white/10 active:bg-white/15 transition-colors ${
         symbol ? "text-[14px]" : "text-[clamp(9px,2.9vw,10.5px)] uppercase"
-      }${held ? " touch-none select-none" : ""}`}
+      }${held || size ? " touch-none select-none" : ""}`}
     >
       {label}
     </button>
@@ -188,6 +194,8 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
           {keyBtn({ symbol: true, label: "~", onClick: () => onSpecialKey("~"), title: t("Tilde (~)") })}
           {keyBtn({ symbol: true, label: "/", onClick: () => onSpecialKey("/"), title: t("Slash (/)") })}
           {keyBtn({ symbol: true, label: "-", onClick: () => onSpecialKey("-"), title: t("Dash (-)") })}
+          {keyBtn({ size: true, label: <ZoomOut size={16} className="mx-auto" />, onClick: () => requestFontSize({ step: -1 }), title: t("Smaller font") })}
+          {keyBtn({ size: true, label: <ZoomIn size={16} className="mx-auto" />, onClick: () => requestFontSize({ step: 1 }), title: t("Larger font") })}
         </div>
       )}
       <div className="flex gap-1">

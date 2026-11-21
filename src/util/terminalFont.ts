@@ -85,6 +85,41 @@ export function readFontSize(): number {
   }
 }
 
+// A pinch on a terminal and the key bar's text-size keys (#372) change the
+// same saved size as Settings. They ask DesktopApp, which keeps the settings,
+// so Settings shows the new size and its next save can't put the old one back.
+export const FONT_SIZE_REQUEST = "submarine-font-size-request";
+export type FontSizeRequest = { size: number } | { step: number };
+export function requestFontSize(request: FontSizeRequest): void {
+  window.dispatchEvent(new CustomEvent<FontSizeRequest>(FONT_SIZE_REQUEST, { detail: request }));
+}
+
+// The size a request asks for, from the size now. Anything else keeps it.
+export function requestedFontSize(now: number, request: unknown): number {
+  const r = request as { size?: unknown; step?: unknown } | null;
+  if (typeof r?.size === "number" && Number.isFinite(r.size)) return clampFontSize(r.size);
+  if (typeof r?.step === "number" && Number.isFinite(r.step)) return clampFontSize(now + r.step);
+  return now;
+}
+
+// A pinch scales the size with the distance between the fingers, from 6 to
+// 40: beyond those a slip of the fingers leaves text too small to read or a
+// terminal a few columns wide. A size set in Settings beyond them is the
+// limit on that side instead, so a pinch never jumps it into the range.
+export const PINCH_MIN_FONT_SIZE = 6;
+export const PINCH_MAX_FONT_SIZE = 40;
+export function pinchFontSize(start: number, scale: number): number {
+  if (!Number.isFinite(scale) || scale <= 0) return start;
+  return keepInPinchRange(start, start * scale);
+}
+// A size a pinch that began at `start` can reach, in whole steps.
+export function keepInPinchRange(start: number, size: number): number {
+  if (!Number.isFinite(size)) return start;
+  const lo = Math.min(start, PINCH_MIN_FONT_SIZE);
+  const hi = Math.max(start, PINCH_MAX_FONT_SIZE);
+  return Math.min(hi, Math.max(lo, Math.round(size)));
+}
+
 export function readFontFamily(): string {
   try {
     return sanitizeFontFamily(localStorage.getItem(FONT_FAMILY_KEY) || "");
