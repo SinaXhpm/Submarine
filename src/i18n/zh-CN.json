@@ -1952,6 +1952,7 @@
   "This profile syncs with {other}, not with {current}, so it doesn't sync now.": "此配置文件与 {other} 同步，而不是与 {current} 同步，因此现在不会同步。",
   "This replaces opening automatically.": "这会取代自动打开。",
   "This replaces Windows Hello for this profile.": "这会取代此配置文件的 Windows Hello 解锁。",
+  "This server": "此服务器",
   "This server doesn't answer the question the delay is measured with.": "此服务器不响应用来测量延迟的请求。",
   "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.": "此服务器没有 SFTP，因此文件通过 shell 命令传输。功能完全相同，只是速度较慢。在 OpenWrt 上，`opkg install openssh-sftp-server` 可添加 SFTP。",
   "This server has none of the service managers the app works with: systemd, OpenRC or OpenWrt's init scripts. It likely uses another init system, such as runit.": "此服务器上没有应用支持的服务管理器（systemd、OpenRC 或 OpenWrt 的 init 脚本）。它可能使用了其他 init 系统，例如 runit。",

@@ -1,7 +1,7 @@
 import { Fragment, useState, useEffect, useRef } from "react";
-import { parseCommandScope, scopeMatches, serverScopeIds } from "../util/commandScope";
+import { parseCommandScope, scopeMatches, scopeToJson, serverScopeIds } from "../util/commandScope";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check, Server, Lock, Tag } from "lucide-react";
+import { Play, Plus, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check, Server, Lock, Tag } from "lucide-react";
 import { useConfirm } from "../ui/confirm";
 import { writeToTerminal } from "../util/pasteText";
 import SecretTextarea from "./SecretTextarea";
@@ -39,8 +39,8 @@ type Tab = "commands" | "notes" | "node";
 // editing at a time (notes expand-to-edit, commands toggle-to-edit), so a
 // flat tagged union is simpler than two parallel sets of useState fields.
 type EditTarget =
-  | { kind: "command"; id: number; title: string; body: string; is_secret: boolean; tags: string }
-  | { kind: "note"; id: number; title: string; body: string };
+  | { kind: "command"; id: number | null; title: string; body: string; is_secret: boolean; tags: string } // id null = a new command being added
+  | { kind: "note"; id: number | null; title: string; body: string }; // id null = a new note being added
 
 // Whether the command of a card's Run button is cut short on that card. Measured,
 // not counted: a card shows about 30 characters in the narrowest panel and far
@@ -64,6 +64,9 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   // the chips make filtering discoverable without knowing the tag names.
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [secretsOnly, setSecretsOnly] = useState(false);
+  // Scope for a command being added from this panel: this server (the
+  // session's server, so it lands under "For this server") or all servers.
+  const [newScope, setNewScope] = useState<"this" | "all">("this");
   const [loading, setLoading] = useState(false);
   // This session's server and its folders, by uuid, for the commands that
   // are for some servers only (util/commandScope). Null: not a saved server.
@@ -106,6 +109,12 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
 
   const isDirty = (target: EditTarget | null): boolean => {
     if (!target) return false;
+    // A new command or note has no saved original: dirty once a title and
+    // a body are both typed (the same bar as the main Library's save
+    // validation, so a half-typed draft is never auto-saved into existence).
+    if (target.id === null) {
+      return target.title.trim() !== "" && target.body.trim() !== "";
+    }
     const o = originalForEdit(target);
     if (!o) return false;
     if (o.title !== target.title || o.body !== target.body) return true;
@@ -178,9 +187,15 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setSaveError(null);
     try {
       if (target.kind === "command") {
+        const isNew = target.id === null;
         await persistCommand(target);
+        // A new row has no id until it is reloaded; without this the
+        // auto-saved row would stay invisible until the next refresh.
+        if (isNew) fetchAll();
       } else {
+        const isNew = target.id === null;
         await persistNote(target);
+        if (isNew) fetchAll();
       }
       return true;
     } catch (e) {
@@ -240,13 +255,48 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setEdit({ kind: "note", id: n.id, title: n.title || "", body: n.body || "" });
   };
 
-  // Persist one command edit: the secret flag/tags go through
-  // set_command_secret_tags FIRST, and only when they actually changed.
-  // That call validates the tags and refuses a bad one, so a bad tag stops
-  // the save before the title/content are written — the other way round,
-  // the text would be saved but the secret/tags not, and nothing would
-  // say so. Title/content go through edit_command after it.
+  // A new draft is added once. Refresh saves a whole draft and leaves it open,
+  // and Lock or closing the panel then saves what is open again: an edit can
+  // be saved twice, an add would make a second copy. Once added, the draft
+  // closes; its row is in the list after the reload.
+  const addedDrafts = useRef(new WeakSet<EditTarget>());
+  const addOnce = async (target: EditTarget, add: () => Promise<unknown>): Promise<void> => {
+    if (addedDrafts.current.has(target)) return;
+    addedDrafts.current.add(target);
+    try {
+      await add();
+    } catch (e) {
+      addedDrafts.current.delete(target);
+      throw e;
+    }
+    if (editRef.current === target) editRef.current = null;
+    setEdit((cur) => (cur === target ? null : cur));
+  };
+
+  // Start a new command draft, scoped to this server by default (when the
+  // panel has one) so it lands under "For this server" once saved.
+  const beginAddCommand = () => {
+    setNewScope(scopeIds?.server ? "this" : "all");
+    setEdit({ kind: "command", id: null, title: "", body: "", is_secret: false, tags: "" });
+  };
+
+  // Persist one command draft: add when id is null, edit otherwise. For a
+  // new command the scope comes from newScope; the new id comes back from
+  // a reload (add_command returns no id), so callers reload after an add.
+  // Edits keep the review order: the secret flag/tags go through
+  // set_command_secret_tags FIRST, and only when they actually changed,
+  // so a bad tag stops the save before the title/content are written.
   const persistCommand = async (target: Extract<EditTarget, { kind: "command" }>): Promise<void> => {
+    if (target.id === null) {
+      // In the user's language, before the backend refuses them in English.
+      const problem = tagsProblem(target.tags);
+      if (problem) throw problem;
+      const scope = newScope === "this" && scopeIds?.server
+        ? scopeToJson({ servers: [scopeIds.server], folders: [] })
+        : null;
+      await addOnce(target, () => invoke("add_command", { title: target.title, content: target.body, scope, isSecret: target.is_secret, tags: target.tags || null }));
+      return;
+    }
     const o = originalForEdit(target);
     const secretChanged = !o || o.is_secret !== target.is_secret || (o.tags || "") !== target.tags;
     if (secretChanged) {
@@ -259,10 +309,21 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setCommands((prev) => prev.map((c) => c.id === target.id ? { ...c, title: target.title, content: target.body, is_secret: target.is_secret, tags: target.tags } : c));
   };
 
-  // Persist one note edit.
+  // Start a new note draft.
+  const beginAddNote = () => {
+    setEdit({ kind: "note", id: null, title: "", body: "" });
+  };
+
+  // Persist one note draft: add when id is null, edit otherwise. The new
+  // id comes back from a reload (add_note returns no id), so callers
+  // reload after an add.
   const persistNote = async (target: Extract<EditTarget, { kind: "note" }>): Promise<void> => {
-    await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
-    setNotes((prev) => prev.map((n) => n.id === target.id ? { ...n, title: target.title, body: target.body } : n));
+    if (target.id === null) {
+      await addOnce(target, () => invoke("add_note", { title: target.title, body: target.body }));
+    } else {
+      await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
+      setNotes((prev) => prev.map((n) => n.id === target.id ? { ...n, title: target.title, body: target.body } : n));
+    }
   };
 
   const cancelEdit = () => {
@@ -282,11 +343,15 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setSaving(true);
     setSaveError(null);
     try {
+      const isNew = edit.id === null;
       if (edit.kind === "command") {
         await persistCommand(edit);
       } else {
         await persistNote(edit);
       }
+      // Something was just created: clear the search and filters so it
+      // is visible in the list instead of hidden behind them.
+      if (isNew) { setSearchQuery(""); setSelectedTag(null); setSecretsOnly(false); }
       setEdit(null);
       fetchAll();
     } catch (e) {
@@ -348,9 +413,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   );
 
   const tabLabel = tab === "commands" ? t("Commands") : tab === "notes" ? t("Notes") : t("Node");
-  // The command editor, for editing a card. Edits keep the stored scope
-  // and start masked.
-  const renderCommandEditor = (target: Extract<EditTarget, { kind: "command" }>) => (
+  // The command editor, shared by editing a card and adding a new one.
+  // `isNew` adds the scope picker (this server vs all servers), starts
+  // a secret readable so the user can see what they type, and labels
+  // the save button Add. Edits keep the stored scope and start masked.
+  const renderCommandEditor = (target: Extract<EditTarget, { kind: "command" }>, isNew: boolean) => (
     <div className="p-3 space-y-2">
       <input
         type="text"
@@ -373,6 +440,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           }}
           placeholder={t("Secret command — it runs in the shell and stays in its history")}
           rows={5}
+          defaultShow={isNew}
           className="w-full p-2 bg-black/40 border border-white/10 rounded font-mono text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
         />
       ) : (
@@ -409,6 +477,25 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           className="flex-1 min-w-0 h-10 sm:h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
         />
       </div>
+      {isNew && scopeIds?.server && (
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-bold text-zinc-500 shrink-0">{t("For")}</span>
+          <button
+            type="button"
+            onClick={() => setNewScope("this")}
+            className={`h-10 sm:h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-all ${newScope === "this" ? "bg-primary/15 text-primary border-primary/40" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:text-white"}`}
+          >
+            {serverName || t("This server")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setNewScope("all")}
+            className={`h-10 sm:h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-all ${newScope === "all" ? "bg-primary/15 text-primary border-primary/40" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:text-white"}`}
+          >
+            {t("All servers")}
+          </button>
+        </div>
+      )}
       <div className="flex gap-1.5">
         <button
           onClick={cancelEdit}
@@ -421,17 +508,18 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           onClick={saveEdit}
           disabled={saving || !isDirty(target)}
           className="flex-1 h-7 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-          title={t("Save (Ctrl+Enter)")}
+          title={isNew ? t("Add command") : t("Save (Ctrl+Enter)")}
         >
-          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {t("Save")}
+          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {isNew ? t("Add") : t("Save")}
         </button>
       </div>
     </div>
   );
 
-  // The note editor, for expanding a note. Collapsing auto-saves (see
-  // collapseEditedNote); the save button is for an explicit save.
-  const renderNoteEditor = (target: Extract<EditTarget, { kind: "note" }>) => (
+  // The note editor, shared by expanding a note and adding a new one.
+  // `isNew` adds a Cancel button (an existing note collapses to save)
+  // and labels the save button Add.
+  const renderNoteEditor = (target: Extract<EditTarget, { kind: "note" }>, isNew: boolean) => (
     <div className="px-3 pb-3 space-y-2">
       <input
         type="text"
@@ -452,6 +540,15 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         autoFocus
       />
       <div className="flex gap-1.5 flex-wrap">
+        {isNew && (
+        <button
+          onClick={cancelEdit}
+          disabled={saving}
+          className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-50"
+        >
+          <X size={11} /> {t("Cancel")}
+        </button>
+        )}
         <button
           onClick={() => copyToClipboard(target.body || "")}
           className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
@@ -470,9 +567,9 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           onClick={saveEdit}
           disabled={saving || !isDirty(target)}
           className="flex-1 h-7 min-w-[64px] rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-          title={isDirty(target) ? t("Save changes (Ctrl+Enter)") : t("No unsaved changes")}
+          title={isNew ? t("Add note") : (isDirty(target) ? t("Save changes (Ctrl+Enter)") : t("No unsaved changes"))}
         >
-          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {t("Save")}
+          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {isNew ? t("Add") : t("Save")}
         </button>
       </div>
     </div>
@@ -491,6 +588,20 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* Add a command (or secret) or a note from this session,
+              without going back to the main Library. Saves any open
+              draft first. */}
+          {(tab === "commands" || tab === "notes") && (
+            <button
+              onClick={async () => { if (await flushDrafts()) { if (tab === "commands") beginAddCommand(); else beginAddNote(); } }}
+              disabled={loading}
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all disabled:opacity-50"
+              title={tab === "commands" ? t("Add command") : t("Add note")}
+              aria-label={tab === "commands" ? t("Add command") : t("Add note")}
+            >
+              <Plus size={14} />
+            </button>
+          )}
           <button
             onClick={async () => { await flushDrafts(); fetchAll(); }}
             disabled={loading}
@@ -667,6 +778,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           </div>
         ) : tab === "commands" ? (
           <>
+            {edit?.kind === "command" && edit.id === null && (
+              <div className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all">
+                {renderCommandEditor(edit, true)}
+              </div>
+            )}
             {filteredCommands.length > 0 ? (
             filteredCommands.map((c, i) => {
               // Narrowed to the command being edited (or null): the editor
@@ -683,7 +799,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 <div
                   className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all"
                 >
-                  {cmdEdit ? renderCommandEditor(cmdEdit) : (
+                  {cmdEdit ? renderCommandEditor(cmdEdit, false) : (
                     <div className="p-3" data-command-card>
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
@@ -739,7 +855,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 </Fragment>
               );
             })
-          ) : (
+          ) : edit?.kind === "command" && edit.id === null ? null : (
             <div className="flex flex-col items-center justify-center py-16 text-zinc-600 text-center px-4">
               <Terminal size={32} className="opacity-20 mb-2" />
               <span className="text-xs font-bold text-zinc-500">{t("No commands found")}</span>
@@ -751,6 +867,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           </>
         ) : (
           <>
+            {edit?.kind === "note" && edit.id === null && (
+              <div className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all">
+                <div className="pt-3">{renderNoteEditor(edit, true)}</div>
+              </div>
+            )}
             {filteredNotes.length > 0 ? (
           filteredNotes.map((n) => {
             const expanded = edit?.kind === "note" && edit.id === n.id;
@@ -787,11 +908,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                   </div>
                 </button>
 
-                {expanded && renderNoteEditor(edit)}
+                {expanded && renderNoteEditor(edit, false)}
               </div>
             );
           })
-        ) : (
+        ) : edit?.kind === "note" && edit.id === null ? null : (
           <div className="flex flex-col items-center justify-center py-16 text-zinc-600 text-center px-4">
             <StickyNote size={32} className="opacity-20 mb-2" />
             <span className="text-xs font-bold text-zinc-500">{t("No notes found")}</span>

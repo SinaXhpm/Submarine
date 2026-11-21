@@ -1998,6 +1998,7 @@
   "This profile syncs with {other}, not with {current}, so it doesn't sync now.": "Сервер синхронізації цього профілю — {other}, а не {current}, тому зараз синхронізація не виконується.",
   "This replaces opening automatically.": "Це замінить автоматичне відкриття.",
   "This replaces Windows Hello for this profile.": "Для цього профілю це замінить Windows Hello.",
+  "This server": "Цей сервер",
   "This server doesn't answer the question the delay is measured with.": "Цей сервер не відповідає на запит, за яким вимірюється затримка.",
   "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.": "На цьому сервері немає SFTP, тому файли передаються через команди оболонки. Усе працює так само, лише повільніше. В OpenWrt SFTP додає команда `opkg install openssh-sftp-server`.",
   "This server has none of the service managers the app works with: systemd, OpenRC or OpenWrt's init scripts. It likely uses another init system, such as runit.": "На цьому сервері немає жодного з менеджерів служб, з якими працює застосунок: systemd, OpenRC чи init-скриптів OpenWrt. Імовірно, тут інша система ініціалізації, наприклад runit.",

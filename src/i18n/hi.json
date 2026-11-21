@@ -1952,6 +1952,7 @@
   "This profile syncs with {other}, not with {current}, so it doesn't sync now.": "यह प्रोफ़ाइल {current} के साथ नहीं, {other} के साथ सिंक होती है, इसलिए अभी सिंक नहीं होती।",
   "This replaces opening automatically.": "यह अपने-आप खुलने की जगह लेगा।",
   "This replaces Windows Hello for this profile.": "इस प्रोफ़ाइल के लिए यह Windows Hello की जगह लेगा।",
+  "This server": "यह सर्वर",
   "This server doesn't answer the question the delay is measured with.": "यह सर्वर उस सवाल का जवाब नहीं देता, जिससे देरी मापी जाती है।",
   "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.": "इस सर्वर पर SFTP नहीं है, इसलिए फ़ाइलें शेल कमांड के ज़रिए भेजी जाती हैं। सब कुछ वैसे ही काम करता है, बस धीमा। OpenWrt पर `opkg install openssh-sftp-server` चलाने से SFTP जुड़ जाता है।",
   "This server has none of the service managers the app works with: systemd, OpenRC or OpenWrt's init scripts. It likely uses another init system, such as runit.": "इस सर्वर पर ऐसा कोई सर्विस मैनेजर नहीं है जिसके साथ ऐप काम करता है: systemd, OpenRC या OpenWrt की init स्क्रिप्ट। यह शायद कोई दूसरा init सिस्टम इस्तेमाल करता है, जैसे runit।",

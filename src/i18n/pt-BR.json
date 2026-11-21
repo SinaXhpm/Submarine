@@ -1952,6 +1952,7 @@
   "This profile syncs with {other}, not with {current}, so it doesn't sync now.": "Este perfil sincroniza com {other}, não com {current}, por isso não está sincronizando agora.",
   "This replaces opening automatically.": "Isso substitui a abertura automática.",
   "This replaces Windows Hello for this profile.": "Isso substitui o Windows Hello neste perfil.",
+  "This server": "Este servidor",
   "This server doesn't answer the question the delay is measured with.": "Este servidor não responde à consulta usada para medir o atraso.",
   "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.": "Este servidor não tem SFTP, então os arquivos passam por comandos de shell. Tudo funciona igual, só que mais devagar. No OpenWrt, `opkg install openssh-sftp-server` adiciona o SFTP.",
   "This server has none of the service managers the app works with: systemd, OpenRC or OpenWrt's init scripts. It likely uses another init system, such as runit.": "Este servidor não tem nenhum dos gerenciadores de serviços com que o app funciona: systemd, OpenRC ou os scripts de init do OpenWrt. Provavelmente usa outro sistema de init, como o runit.",
