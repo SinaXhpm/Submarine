@@ -29,6 +29,7 @@ import { lastInputWasTouch } from '../util/lastInput';
 import { hardwareKeyboardAttached } from '../util/hardwareKeyboard';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
+import { titleReporter, type TitleReporter } from '../util/terminalTitle';
 import { tn, useT } from '../i18n';
 import { readClipboardText, copyText } from '../util/clipboard';
 
@@ -290,9 +291,10 @@ const TerminalView = ({
   /// util/shellFolder), for the SFTP panel's Follow (#245). Reported at
   /// every prompt; the parent keeps what changed.
   onFolder?: (terminalId: string, path: string, host: string) => void;
-  /// The title a program in this terminal set itself (OSC 0/2, #391),
-  /// for the session tab. Reported on every change; an empty title means
-  /// "no title" and the parent falls back to the rename/server name.
+  /// The title a program in this terminal set itself (OSC 0/2, #391), for
+  /// the tabs: cleaned, at most one report every TITLE_GAP_MS while it keeps
+  /// changing (util/terminalTitle), and "" when there is none, Settings turns
+  /// titles off, or this terminal goes.
   onTitle?: (terminalId: string, title: string) => void;
   /// Closes the parent session tab.
   onClose?: () => void;
@@ -521,6 +523,8 @@ const TerminalView = ({
   onFolderRef.current = onFolder;
   const onTitleRef = useRef(onTitle);
   onTitleRef.current = onTitle;
+  // The program's title (util/terminalTitle), made with the xterm.
+  const titlesRef = useRef<TitleReporter | null>(null);
   // The terminal's input handler (what xterm's onData runs), for keys that
   // don't come from xterm itself — the mobile key bar's arrows and symbols.
   const inputRef = useRef<((data: string) => void) | null>(null);
@@ -639,6 +643,8 @@ const TerminalView = ({
     // what it asks is still answered.
     const reset = {};
     staleModesRef.current = reset;
+    // So does the title it set; the new shell may set its own.
+    titlesRef.current?.reset();
     term.write('\r\n\x1b[33m' + t('── reconnected ──') + '\x1b[0m\r\n' + RESET_INPUT_MODES, () => {
       if (staleModesRef.current === reset) staleModesRef.current = null;
     });
@@ -1023,12 +1029,11 @@ const TerminalView = ({
     };
     term.parser.registerOscHandler(7, (data) => { folder(parseOsc7(data)); return true; });
     term.parser.registerOscHandler(1337, (data) => folder(parseOsc1337(data)));
-    // The title a program sets itself (OSC 0/2, #391): xterm parses the
-    // sequence and fires this on every change. The parent shows it on the
-    // session tab while it is non-empty.
-    const titleDisposable = term.onTitleChange((title) => {
-      onTitleRef.current?.(terminalId, title);
-    });
+    // The title a program sets itself (OSC 0/2, #391): xterm reads the
+    // sequence; the parent shows the title on the tabs.
+    const titles = titleReporter((title) => onTitleRef.current?.(terminalId, title));
+    titlesRef.current = titles;
+    const titleDisposable = term.onTitleChange((title) => titles.set(title));
     term.open(terminalRef.current);
 
     // A scroll redraws the selection, and the DOM renderer draws every row for
@@ -1938,6 +1943,8 @@ const TerminalView = ({
     // Handle Settings Change — font size and face apply live to open terminals.
     let fontDisposed = false;
     const handleSettingsChange = () => {
+      // Program titles on or off.
+      titles.refresh();
       // So does the scrollback; fewer lines than the terminal holds drops the
       // oldest ones.
       const scrollback = readScrollback();
@@ -2034,6 +2041,8 @@ const TerminalView = ({
       resizeObserver.disconnect();
       onDataDisposable.dispose();
       titleDisposable.dispose();
+      titlesRef.current = null;
+      if (titles.dispose()) onTitleRef.current?.(terminalId, "");
       term.textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
       term.textarea?.removeEventListener("compositionend", onCompositionEnd);
       term.element?.removeEventListener("keydown", onAndroidKeyDown, true);

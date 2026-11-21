@@ -32,6 +32,7 @@ import {
   readBoldBright, readCustomScheme, readMinContrast, readThemeId, schemeToWindowsTerminalJson,
 } from "./util/terminalTheme";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
+import { SHOW_TERMINAL_TITLES_KEY, readShowTerminalTitles } from "./util/terminalTitle";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
 import { AUTO_RECONNECT_KEY, DEFAULT_SESSION_KEEP, SEND_KEEPALIVES_KEY, forgetSessionKeep, readAutoReconnectDefault, readSendKeepalivesDefault, readSessionKeep, writeSessionKeep } from "./util/sessionKeep";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
@@ -141,22 +142,18 @@ function DesktopApp() {
   // lock: session ids come from each profile's server ids, so another
   // profile would reuse them.
   const [tabNames, setTabNames] = useState<Record<string, string>>({});
-  // Title a program in a terminal set itself (OSC 0/2, #391), by session
-  // id — the active terminal's title, reported up by SessionView. Shown on
-  // the session tab while non-empty. Dropped when the session closes and on
-  // lock, like tabNames: session ids come from each profile's server ids,
-  // so another profile would reuse them.
+  // The title a program in a terminal set itself (OSC 0/2, #391), by session
+  // id: the active terminal's, cleaned (util/terminalTitle). Shown on the tab
+  // after the name, and only there: lists, prompts and dialogs keep the
+  // server's own name. Dropped when the session closes and on lock, like
+  // tabNames: session ids come from each profile's server ids, so another
+  // profile would reuse them.
   const [oscTitles, setOscTitles] = useState<Record<string, string>>({});
   const clearOscTitle = (sid: string) => setOscTitles(prev => { const { [sid]: _, ...rest } = prev; return rest; });
   // The tab whose menu shows the name editor; gone with the menu.
   const [tabRename, setTabRename] = useState<string | null>(null);
   useEffect(() => { if (!tabMenu) setTabRename(null); }, [tabMenu]);
-  // The terminal-set title wins while present, as in PuTTY; otherwise the
-  // rename, else the server name.
-  const tabLabel = (s: Session) => {
-    const osc = oscTitles[s.id];
-    return osc ? osc : (tabNames[s.id] ?? s.serverName);
-  };
+  const tabLabel = (s: Session) => tabNames[s.id] ?? s.serverName;
   const clearTabName = (sid: string) => setTabNames(prev => { const { [sid]: _, ...rest } = prev; return rest; });
   // Sessions merged into the current session-view canvas. When a session
   // tab is being viewed and this set is non-empty, its SessionView renders
@@ -536,6 +533,9 @@ function DesktopApp() {
     // Off by default: terminals start the remote account's own shell, same
     // as before this setting existed. See util/terminalShell.
     useLocalShell: readUseLocalShell(),
+    // On by default: tabs show the title a program sets after their name. See
+    // util/terminalTitle.
+    showTerminalTitles: readShowTerminalTitles(),
     // On by default: logins may use keys from an ssh-agent on this computer.
     // See util/sshAgent.
     useSshAgent: readUseSshAgent(),
@@ -574,6 +574,7 @@ function DesktopApp() {
     localStorage.setItem(BOLD_BRIGHT_KEY, appSettings.terminalBoldBright ? 'on' : 'off');
     localStorage.setItem(MIN_CONTRAST_KEY, appSettings.terminalMinContrast ? 'on' : 'off');
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
+    localStorage.setItem(SHOW_TERMINAL_TITLES_KEY, appSettings.showTerminalTitles === false ? 'off' : 'on');
     localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
     // Monitoring reads it at each connect, in the background. A phone or
     // tablet has no ssh-agent (see readUseSshAgentForMonitor).
@@ -2030,6 +2031,10 @@ function DesktopApp() {
           // connected?" and "is it broadcasting?" at a glance.
           const isBroadcastTarget = broadcast.enabled && broadcast.targetSessionIds.has(s.id);
           const isMergedTab = mergedSessionIds.includes(s.id);
+          // The program's title after the name (#391). The name comes first
+          // and stays whole, so a title can't pass for another server.
+          const programTitle = oscTitles[s.id];
+          const fullLabel = programTitle ? `${tabLabel(s)} · ${programTitle}` : tabLabel(s);
           // The open tab joins the session's toolbar below it, with a line in
           // the server's own colour on top. A thin line parts two tabs where
           // neither is the open one.
@@ -2092,7 +2097,7 @@ function DesktopApp() {
               // wheel-to-horizontal scroll above), so wider tabs just mean
               // more scrolling — they never hide the name behind an ellipsis.
               // `whitespace-nowrap` keeps long names on a single line.
-              title={isMergedTab ? t("{name} · split beside current view (Ctrl-click to unpair)", { name: tabLabel(s) }) : tabLabel(s)}
+              title={isMergedTab ? t("{name} · split beside current view (Ctrl-click to unpair)", { name: fullLabel }) : fullLabel}
               className={`group no-drag relative flex items-center gap-2 h-[33px] pl-3 pr-1.5 rounded-t-lg cursor-pointer shrink-0 transition-colors ${
                 active
                   ? 'z-10 bg-[#141417] text-zinc-100 border-x border-t border-white/10'
@@ -2132,6 +2137,12 @@ function DesktopApp() {
                 className="text-[11.5px] font-semibold whitespace-nowrap tracking-tight rounded outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               >
                 {tabLabel(s)}
+                {/* A long title is cut here; the tooltip has all of it. */}
+                {programTitle && (
+                  <span className="inline-block max-w-[16rem] truncate align-bottom ml-1 font-normal opacity-70">
+                    · <bdi>{programTitle}</bdi>
+                  </span>
+                )}
               </button>
               {/* Mobile-only actions trigger. On phone we surface the same
                   tabMenu (Reconnect / Disconnect / Close) here since there
