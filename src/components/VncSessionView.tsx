@@ -12,6 +12,8 @@ import { VNC_PRESETS, readVncOptions, vncNeedsReconnect, writeVncOptions, type V
 import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
 import { useT, tk } from "../i18n";
+import NotConnected from "./NotConnected";
+import { useWaitToConnect } from "../hooks/useWaitToConnect";
 import { copyText } from "../util/clipboard";
 
 // A VNC server's tab: the server's screen in the tab itself (vnc_client.rs),
@@ -30,6 +32,9 @@ const NOT_ENCRYPTED = tk("VNC isn't encrypted: the screen and what is typed cros
 // `shown`: the tab is on screen (alone, or in a split), not behind another view.
 export default function VncSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
   const t = useT();
+  // A tab opened at startup without connecting waits for Connect: the tab
+  // shows it as "idle", and the status here stays "connecting" until then.
+  const { waiting, connectNow } = useWaitToConnect(session);
   const [status, setStatus] = useState<Status>("connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [reason, setReason] = useState("");
@@ -66,7 +71,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   const kbiFirstInputRef = useRef<HTMLInputElement | null>(null);
   const promptWaiting = !!(fingerprintPrompt || kbiPrompt);
 
-  useEffect(() => { onStatusChange?.(session.id, status); }, [onStatusChange, session.id, status]);
+  useEffect(() => { onStatusChange?.(session.id, waiting ? "idle" : status); }, [onStatusChange, session.id, status, waiting]);
   useEffect(() => { onPromptChange?.(session.id, promptWaiting); }, [onPromptChange, session.id, promptWaiting]);
   useEffect(() => () => onPromptChange?.(session.id, false), [onPromptChange, session.id]);
   useEffect(() => {
@@ -115,6 +120,8 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).
   useEffect(() => {
+    // Opened at startup without connecting: nothing starts until Connect.
+    if (waiting) return;
     let cancelled = false;
     const id = session.id;
     const subs = Promise.all([
@@ -186,7 +193,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       subs.then((fns) => fns.forEach((f) => f()));
       invoke("disconnect_session", { sessionId: id }).catch(console.error);
     };
-  }, [session.id, connect, pushLog, t]);
+  }, [session.id, connect, pushLog, t, waiting]);
 
   const handleFingerprintResponse = async (accepted: boolean) => {
     const nonce = fingerprintPrompt?.nonce;
@@ -278,6 +285,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   }, [status]);
 
   const name = displayName || session.serverName;
+  if (waiting) return <NotConnected name={name} onConnect={connectNow} onClose={onClose} />;
   const working = status === "connecting";
   const broken = status === "failed" || status === "disconnected";
   const connected = status === "connected";
