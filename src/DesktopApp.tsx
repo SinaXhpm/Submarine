@@ -48,6 +48,7 @@ import { CommandScope, describeScope, parseCommandScope, scopeToJson } from "./u
 import CommandScopePicker from "./components/CommandScopePicker";
 import type { HeldDeletion } from "./components/HeldDeletions";
 import { isFtp, serverProtocol, type ServerProtocol } from "./util/serverProtocol";
+import { startupChoice } from "./util/startupChoice";
 import { ai, errText, AI_OPEN_EVENT, AI_OPEN_SERVER_EVENT, type AiOpenServerDetail } from "./util/aiApi";
 import { clearAiFocus, clearFeeds, requestAiFocus } from "./util/aiEvents";
 import { ErrorBoundary, Guarded } from "./ui/ErrorBoundary";
@@ -99,7 +100,32 @@ const SESSION_STATUS: Record<string, string> = {
 // looking up the DB row.
 // `serverUuid` is the saved server's sync id, which keys this device's own
 // per-server settings (the Shell button, see util/shellSync.ts).
-type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; protocol?: ServerProtocol; mirrors?: string; runOnConnect?: string; runOnConnectEvery?: boolean; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null };
+// `openOnly`: opened when the profile was unlocked, without connecting (the
+// server's "At startup: Open the tab"); the tab waits for Connect
+// (hooks/useWaitToConnect).
+type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; protocol?: ServerProtocol; mirrors?: string; runOnConnect?: string; runOnConnectEvery?: boolean; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null; openOnly?: boolean };
+
+// A saved server's tab, as a click on it opens it.
+function sessionOf(server: any): Session {
+  return {
+    id: `session-${server.id}`,
+    serverId: server.id,
+    serverName: server.name,
+    protocol: serverProtocol(server.protocol),
+    // Pass the raw mirrors JSON through to SessionView so the
+    // MirrorsPanel can pre-populate "Saved on this node" without
+    // another round-trip to the backend.
+    mirrors: server.mirrors,
+    serverUuid: server.uuid ?? null,
+    // Commands to auto-run once on the first terminal (see SessionView).
+    runOnConnect: server.run_on_connect || "",
+    // And once into each new terminal of the tab (#256).
+    runOnConnectEvery: !!server.run_on_connect_every,
+    // Set or changed elsewhere, not allowed here yet: SessionView asks
+    // before typing them.
+    runOnConnectHeld: (server.held || []).includes("run_on_connect"),
+  };
+}
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -400,7 +426,10 @@ function DesktopApp() {
     authType: "custom_pass", credentialId: "", folderId: "", keyId: "",
     proxyType: "none", proxyHost: "", proxyPort: 1080,
     tunnels: [] as { local: string, remote: string, type: string, name?: string, stopped?: boolean }[],
+    // At startup: autostart = open the tab and connect (SSH servers only);
+    // autoOpen = open the tab without connecting (any kind of server).
     autostart: false,
+    autoOpen: false,
     mirrors: [] as { local: string, remote: string, soft_delete: boolean, excludes: string[], conflict_resolution: string }[],
     color: null as string | null,
     // Free-form per-node description / runbook text. Lives on the server row
@@ -1053,42 +1082,45 @@ function DesktopApp() {
     invoke<{ signed_in: boolean; email: string | null }>("cloud_status")
       .then((s) => invoke("set_editor_label", { label: s.signed_in && s.email ? s.email : "" }))
       .catch(() => {});
-    // Autostart sweep: load servers directly (refreshAll is also doing this
+    // Startup sweep: load servers directly (refreshAll is also doing this
     // in parallel, but its state update is async and we can't read `servers`
-    // back here without a stale-closure race), pick the ones flagged
-    // autostart, and stage them all into the sessions tab strip in one
-    // setSessions call. The user lands focused on the first autostart node;
-    // each new SessionView component then kicks off its own connect on mount.
+    // back here without a stale-closure race), pick the ones set to open at
+    // startup ("At startup" in the server form), and stage them all into the
+    // sessions tab strip in one setSessions call, in the list's order. Each
+    // new view then kicks off its own connect on mount, or waits for Connect
+    // when it opens only. The user lands on the first one that connects,
+    // else on the first one opened.
     try {
       const list = await invoke<any[]>("get_servers");
       // Autostart someone else switched on in a shared profile waits for
       // this device's OK (Servers → Review) instead of connecting by itself.
       const isHeld = (s: any) => (s.held || []).includes("autostart");
-      const waiting = list.filter((s) => s.autostart && isHeld(s));
+      // And a server someone else moved waits for it before its tab opens:
+      // Connect in that tab wouldn't ask about the new address, as opening
+      // the server by hand does.
+      const isMoved = (s: any) => (s.held || []).some((i: string) => i.startsWith("moved:"));
+      // Open and connect: only SSH servers start by themselves (an RDP server
+      // would open an app).
+      const connects = (s: any) => !!s.autostart && !isHeld(s) && (s.protocol ?? "ssh") === "ssh";
+      // Open the tab, not connected: any kind of server.
+      const opensOnly = (s: any) => !connects(s) && !!s.auto_open && !isMoved(s);
+      const waiting = list.filter((s) => (s.autostart && isHeld(s)) || (s.auto_open && !connects(s) && isMoved(s)));
       if (waiting.length > 0) {
         addLog(t("Autostart: {names} waiting for your OK (Servers → Review).", { names: waiting.map((s) => s.name).join(", ") }), "info");
       }
-      // Only SSH servers start by themselves (an RDP server would open an app).
-      const toStart = list.filter((s) => s.autostart && !isHeld(s) && (s.protocol ?? "ssh") === "ssh");
-      if (toStart.length === 0) return;
-      const newSessions = toStart.map((s) => ({
-        id: `session-${s.id}`,
-        serverId: s.id,
-        serverName: s.name,
-        mirrors: s.mirrors,
-        serverUuid: s.uuid ?? null,
-        // As when it's opened by hand (openServer).
-        runOnConnect: s.run_on_connect || "",
-        runOnConnectEvery: !!s.run_on_connect_every,
-        runOnConnectHeld: (s.held || []).includes("run_on_connect"),
-      }));
-      setSessions((prev: any[]) => {
+      const toOpen = list.filter((s) => connects(s) || opensOnly(s));
+      if (toOpen.length === 0) return;
+      const newSessions: Session[] = toOpen.map((s) => (opensOnly(s) ? { ...sessionOf(s), openOnly: true } : sessionOf(s)));
+      setSessions((prev: Session[]) => {
         const seen = new Set(prev.map((p) => p.id));
         const fresh = newSessions.filter((n) => !seen.has(n.id));
         return [...prev, ...fresh];
       });
-      setActiveView(newSessions[0].id);
-      addLog(tn(newSessions.length, "Autostart: opened {count} node.", "Autostart: opened {count} nodes."), "info");
+      setActiveView((newSessions.find((s) => !s.openOnly) ?? newSessions[0]).id);
+      const started = newSessions.filter((s) => !s.openOnly).length;
+      const opened = newSessions.length - started;
+      if (started > 0) addLog(tn(started, "Autostart: opened {count} node.", "Autostart: opened {count} nodes."), "info");
+      if (opened > 0) addLog(tn(opened, "Opened {count} tab without connecting.", "Opened {count} tabs without connecting."), "info");
     } catch (e) {
       addLog(`AUTOSTART_LOAD_FAILED: ${e}`, "error");
     }
@@ -1322,24 +1354,11 @@ function DesktopApp() {
         if (!ok) return false;
         await allowHeld(server.id, [moved]);
       }
-      setSessions((prev: Session[]) => prev.some((s) => s.id === sessionId) ? prev : [...prev, {
-        id: sessionId,
-        serverId: server.id,
-        serverName: server.name,
-        protocol: serverProtocol(server.protocol),
-        // Pass the raw mirrors JSON through to SessionView so the
-        // MirrorsPanel can pre-populate "Saved on this node" without
-        // another round-trip to the backend.
-        mirrors: server.mirrors,
-        serverUuid: server.uuid ?? null,
-        // Commands to auto-run once on the first terminal (see SessionView).
-        runOnConnect: server.run_on_connect || "",
-        // And once into each new terminal of the tab (#256).
-        runOnConnectEvery: !!server.run_on_connect_every,
-        // Set or changed elsewhere, not allowed here yet: SessionView asks
-        // before typing them.
-        runOnConnectHeld: (server.held || []).includes("run_on_connect"),
-      }]);
+      setSessions((prev: Session[]) => prev.some((s) => s.id === sessionId) ? prev : [...prev, sessionOf(server)]);
+    } else if (existing.openOnly && sessionStatuses[sessionId] === "idle") {
+      // Its tab opened at startup and waits: opening the server connects it,
+      // as Connect in the tab does (hooks/useWaitToConnect).
+      window.dispatchEvent(new CustomEvent(`session-reconnect-${sessionId}`));
     }
 
     setActiveView(sessionId);
@@ -1478,6 +1497,7 @@ function DesktopApp() {
       proxyPort: server.proxy_port || 1080,
       tunnels: parseObjectList(server.tunnels).map(normalizeTunnel),
       autostart: !!server.autostart,
+      autoOpen: !!server.auto_open,
       mirrors: parseObjectList(server.mirrors).map(normalizeMirror),
       color: server.color ?? null,
       notes: server.notes || "",
@@ -2024,6 +2044,7 @@ function DesktopApp() {
             st === "connecting"   ? t("Connecting…") :
             st === "failed"       ? t("Connection failed") :
             st === "disconnected" ? t("Disconnected") :
+            st === "idle"         ? t("Not connected") :
                                     st;
           // Broadcast indicator: small orange dot next to the status dot when
           // this session is in the target set AND broadcast is armed. Kept
@@ -2384,6 +2405,7 @@ function DesktopApp() {
                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                           st === "connected" ? "bg-emerald-400" :
                           st === "connecting" ? "bg-amber-400" :
+                          st === "idle" ? "bg-zinc-500" :
                           "bg-rose-500"
                         }`} />
                         <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
@@ -2477,20 +2499,24 @@ function DesktopApp() {
                 }}
               >{t("Edit server")}</button>
             )}
+            {/* A tab that hasn't connected yet (opened at startup, or an RDP
+                tab on a phone) connects; there's nothing to disconnect. */}
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
               onClick={() => {
                 window.dispatchEvent(new CustomEvent(`session-reconnect-${targetId}`));
                 setTabMenu(null);
               }}
-            >{t("Reconnect")}</button>
-            <button
-              className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
-              onClick={() => {
-                invoke("disconnect_session", { sessionId: targetId }).catch(console.error);
-                setTabMenu(null);
-              }}
-            >{t("Disconnect")}</button>
+            >{sessionStatuses[targetId] === "idle" ? t("Connect") : t("Reconnect")}</button>
+            {sessionStatuses[targetId] !== "idle" && (
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
+                onClick={() => {
+                  invoke("disconnect_session", { sessionId: targetId }).catch(console.error);
+                  setTabMenu(null);
+                }}
+              >{t("Disconnect")}</button>
+            )}
 
             {/* Pin/Unpin the session's currently-active terminal to
                 the Wall — one-click convenience so users don't have to
@@ -2591,6 +2617,7 @@ function DesktopApp() {
                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                           st === "connected" ? "bg-emerald-400" :
                           st === "connecting" ? "bg-amber-400" :
+                          st === "idle" ? "bg-zinc-500" :
                           "bg-rose-500"
                         }`} />
                         <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
@@ -3158,6 +3185,7 @@ function DesktopApp() {
                         const dotTone =
                           st === 'connected'    ? 'bg-emerald-400' :
                           st === 'connecting'   ? 'bg-amber-400 animate-pulse-brief' :
+                          st === 'idle'         ? 'bg-zinc-500' :
                                                   'bg-rose-500';
                         return (
                           <div
@@ -3258,6 +3286,7 @@ function DesktopApp() {
                                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                     st === 'connected' ? 'bg-emerald-400' :
                                     st === 'connecting' ? 'bg-amber-400' :
+                                    st === 'idle' ? 'bg-zinc-500' :
                                     'bg-rose-500'
                                   }`} />
                                   <span className="text-[11px] font-bold text-zinc-200 truncate flex-1">
@@ -3730,6 +3759,14 @@ function DesktopApp() {
               await invoke("set_server_jump_host", { id: savedId, value: newNode.jumpHostId ? parseInt(newNode.jumpHostId) : null, persist: false });
             } catch (e) {
               addLog(`SAVE_JUMP_HOST_FAILED: ${e}`, "error");
+            }
+            // At startup: open the tab without connecting, for any kind of
+            // server (util/startupChoice; autostart went with the rest above).
+            try {
+              const sshServer = !isRdp && !isTelnet && !isVnc && !ftpServer;
+              await invoke("set_server_auto_open", { id: savedId, value: startupChoice(newNode, sshServer) === "open", persist: false });
+            } catch (e) {
+              addLog(`SAVE_AUTO_OPEN_FAILED: ${e}`, "error");
             }
             // SSH, RDP, telnet, VNC or FTP: the same separate-write pattern.
             try {

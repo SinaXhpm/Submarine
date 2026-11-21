@@ -1016,7 +1016,7 @@ const ENTITIES: &[EntitySpec] = &[
     EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false }] },
     EntitySpec {
         table: "servers",
-        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "run_on_connect_every", "protocol", "position", "edited_by"],
+        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "auto_open", "mirrors", "color", "notes", "run_on_connect", "run_on_connect_every", "protocol", "position", "edited_by"],
         fks: &[
             Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials", required: false },
             Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders", required: false },
@@ -1074,7 +1074,7 @@ fn col_kind(table: &str, col: &str) -> ColKind {
         | ("notes", "title" | "body") => ColKind::RequiredText,
         ("servers", "port") => ColKind::Int32,
         ("servers", "proxy_port") => ColKind::OptionalInt32,
-        ("servers", "autostart" | "position" | "run_on_connect_every") => ColKind::OptionalInt,
+        ("servers", "autostart" | "auto_open" | "position" | "run_on_connect_every") => ColKind::OptionalInt,
         ("commands", "is_secret") => ColKind::OptionalInt,
         ("servers", "tunnels" | "mirrors") => ColKind::ObjectList,
         _ => ColKind::Text,
@@ -1518,6 +1518,9 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // And for a server's `run_on_connect_every` (#256): a peer from before it
     // would otherwise turn it off whenever it edits the server.
     let preserve_local_every = spec.table == "servers" && !obj.contains_key("run_on_connect_every");
+    // And for a server's `auto_open` (its tab opens, not connected, when the
+    // profile is unlocked): a peer from before it would turn it off.
+    let preserve_local_auto_open = spec.table == "servers" && !obj.contains_key("auto_open");
     // The same for a command's `scope` (#22): a peer from before it would
     // otherwise turn a command for some servers into one for all of them.
     let preserve_local_scope = spec.table == "commands" && !obj.contains_key("scope");
@@ -1613,6 +1616,8 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 format!("protocol={}.protocol", spec.table)
             } else if c.as_str() == "run_on_connect_every" && preserve_local_every {
                 format!("run_on_connect_every={}.run_on_connect_every", spec.table)
+            } else if c.as_str() == "auto_open" && preserve_local_auto_open {
+                format!("auto_open={}.auto_open", spec.table)
             } else if c.as_str() == "scope" && preserve_local_scope {
                 format!("scope={}.scope", spec.table)
             } else if c.as_str() == "is_secret" && preserve_local_secret {
@@ -4278,7 +4283,7 @@ mod sync_engine_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, auto_open INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER, tags TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
@@ -4893,6 +4898,69 @@ mod sync_engine_tests {
         apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
         let every: Option<i64> = b.query_row("SELECT run_on_connect_every FROM servers WHERE name='db'", [], |r| r.get(0)).unwrap();
         assert_eq!(every, None);
+    }
+
+    // "At startup: Open the tab" syncs, and a peer from before it (no key)
+    // editing the server doesn't turn it off; one that has it can.
+    #[test]
+    fn auto_open_syncs_and_an_older_peers_edit_keeps_it() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name, host, port, auto_open) VALUES('web', 'h', 22, 1)", []).unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        let got = |c: &Connection, name: &str| -> Option<i64> {
+            c.query_row("SELECT auto_open FROM servers WHERE name=?1", [name], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(got(&b, "web"), Some(1), "it syncs");
+
+        // An older peer edits the server: its record has no auto_open.
+        a.execute("UPDATE servers SET host='h2' WHERE name='web'", []).unwrap();
+        let ahead = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            assert!(obj.as_object_mut().unwrap().remove("auto_open").is_some(), "a current peer always sends the key");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+            r.updated_at = format!("{ahead:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let host: String = b.query_row("SELECT host FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "h2", "the edit applies");
+        assert_eq!(got(&b, "web"), Some(1), "and the server keeps it");
+
+        // A current peer turns it off.
+        a.execute("UPDATE servers SET auto_open=0 WHERE name='web'", []).unwrap();
+        let later = ahead + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            r.updated_at = format!("{later:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert_eq!(got(&b, "web"), Some(0), "off from a current peer is off");
+
+        // A server new to this device, from an older peer, lands with it off.
+        let (c, _hc) = device("C");
+        c.execute("INSERT INTO servers(name, host, port) VALUES('db', 'h3', 22)", []).unwrap();
+        let mut recs = collect_local_records(&c, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            obj.as_object_mut().unwrap().remove("auto_open");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert_eq!(got(&b, "db"), None);
+
+        // A value that isn't a number is refused, as for autostart.
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        let later2 = later + 60_000;
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            obj.as_object_mut().unwrap().insert("auto_open".into(), json!("yes"));
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+            r.updated_at = format!("{later2:015}:00000:zzz");
+        }
+        let _ = apply_remote_records(&b, &KEY, &recs, &hb);
+        assert_eq!(got(&b, "web"), Some(0), "the bad record didn't land");
     }
 
     #[test]
@@ -7632,6 +7700,11 @@ async fn setup_master_db_inner(
             // it still lands (see apply_entity).
             "ALTER TABLE commands ADD COLUMN is_secret INTEGER",
             "ALTER TABLE commands ADD COLUMN tags TEXT",
+            // 1: the server's tab opens, not connected, when the profile is
+            // unlocked ("At startup: Open the tab"). NULL or 0 = it doesn't;
+            // `autostart` (open and connect) comes first. Synced; nullable so
+            // a record from an older peer still lands.
+            "ALTER TABLE servers ADD COLUMN auto_open INTEGER",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -7678,7 +7751,7 @@ async fn setup_master_db_inner(
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, auto_open INTEGER, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER, tags TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
@@ -8835,6 +8908,23 @@ async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: Stri
 /// own command (like set_server_notes) so it doesn't have to be threaded
 /// through add_server / edit_server's positional parameter lists. `every`
 /// left out keeps what the server has.
+/// "At startup: Open the tab" (`auto_open`): the server's tab opens, not
+/// connected, when the profile is unlocked. Its own write, like the
+/// on-connect commands, so add_server and edit_server keep their arguments.
+#[tauri::command]
+async fn set_server_auto_open(state: tauri::State<'_, DbState>, id: i32, value: bool, persist: Option<bool>) -> Result<(), String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    // Written only when it changes: every write stamps the server for sync.
+    conn.execute(
+        "UPDATE servers SET auto_open=?1 WHERE id=?2 AND COALESCE(auto_open, 0) != ?1",
+        rusqlite::params![i64::from(value), id],
+    ).map_err(|e| format!("[DATABASE] SERVER_AUTO_OPEN_FAILED: {}", e))?;
+    drop(conn_guard);
+    save_unless_batched(&state, persist)?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, value: String, every: Option<bool>, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
@@ -8984,7 +9074,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // ORDER BY (position, id): `position` is the manual drag-to-reorder rank
     // (default 0 for never-reordered rows), and id breaks ties so the order is
     // stable and, before any reorder, identical to the old rowid order.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol, run_on_connect_every FROM servers ORDER BY position, id")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol, run_on_connect_every, auto_open FROM servers ORDER BY position, id")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -9011,6 +9101,9 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "run_on_connect": row.get::<_, Option<String>>(18)?.unwrap_or_default(),
             // The commands go into every new terminal too, not only the first (#256).
             "run_on_connect_every": row.get::<_, Option<i64>>(25)?.unwrap_or(0) != 0,
+            // Its tab opens, not connected, when the profile is unlocked
+            // (autostart, which also connects, comes first).
+            "auto_open": row.get::<_, Option<i64>>(26)?.unwrap_or(0) != 0,
             "jump_host_id": row.get::<_, Option<i32>>(19)?,
             // Attribution: HLC stamp (encodes last-edit time) + who last edited.
             "updated_at": row.get::<_, Option<String>>(20)?,
@@ -26863,7 +26956,7 @@ pub fn run() {
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
             profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions, cloud_resume_profile, profile_copies, restore_profile_copy, folder_copy_status, folder_copy_choose, folder_copy_stop, folder_copy_now,
             set_editor_label,
-            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
+            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_auto_open, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders, move_folder, move_server_to_folder,
             add_command, edit_command, set_command_scope, set_command_secret_tags, delete_command, get_commands,

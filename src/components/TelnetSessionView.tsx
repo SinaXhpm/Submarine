@@ -6,6 +6,8 @@ import { AuthPrompts } from "./AuthPrompts";
 import TerminalView from "./TerminalView";
 import { readUseSshAgent } from "../util/sshAgent";
 import { tk, useT } from "../i18n";
+import NotConnected from "./NotConnected";
+import { useWaitToConnect } from "../hooks/useWaitToConnect";
 
 // A telnet server's tab (#179). It connects — straight to the server, or
 // through the node's SSH server, asking that server's host-key and login
@@ -21,6 +23,9 @@ const NOT_ENCRYPTED = tk("Telnet isn't encrypted: what is typed here, passwords 
 
 export default function TelnetSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange, onSessionTitle }: any) {
   const t = useT();
+  // A tab opened at startup without connecting waits for Connect: the tab
+  // shows it as "idle", and the status here stays "connecting" until then.
+  const { waiting, connectNow } = useWaitToConnect(session);
   const [status, setStatus] = useState<Status>("connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [reason, setReason] = useState("");
@@ -41,7 +46,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
   const kbiFirstInputRef = useRef<HTMLInputElement | null>(null);
   const promptWaiting = !!(fingerprintPrompt || kbiPrompt);
 
-  useEffect(() => { onStatusChange?.(session.id, status); }, [onStatusChange, session.id, status]);
+  useEffect(() => { onStatusChange?.(session.id, waiting ? "idle" : status); }, [onStatusChange, session.id, status, waiting]);
   useEffect(() => { onPromptChange?.(session.id, promptWaiting); }, [onPromptChange, session.id, promptWaiting]);
   useEffect(() => () => onPromptChange?.(session.id, false), [onPromptChange, session.id]);
   useEffect(() => {
@@ -71,6 +76,8 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).
   useEffect(() => {
+    // Opened at startup without connecting: nothing starts until Connect.
+    if (waiting) return;
     let cancelled = false;
     const id = session.id;
     const subs = Promise.all([
@@ -132,7 +139,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
       subs.then((fns) => fns.forEach((f) => f()));
       invoke("disconnect_session", { sessionId: id }).catch(console.error);
     };
-  }, [session.id, terminalId, connect, pushLog]);
+  }, [session.id, terminalId, connect, pushLog, waiting]);
 
   const handleFingerprintResponse = async (accepted: boolean) => {
     const nonce = fingerprintPrompt?.nonce;
@@ -149,6 +156,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
   };
 
   const name = displayName || session.serverName;
+  if (waiting) return <NotConnected name={name} onConnect={connectNow} onClose={onClose} />;
   const working = status === "connecting";
   const broken = status === "failed" || status === "disconnected";
   const statusText = working
