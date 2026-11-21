@@ -406,7 +406,7 @@
           "detail": "Android 7.0 und neuer · .apk"
         }
       ],
-      "betaNote": "Diese Seite beschreibt Version 0.5, die gerade die letzten Tests durchläuft. Bis zur Veröffentlichung erhalten Sie über die Schaltflächen „Herunterladen“ Version 0.3.8, die zuletzt veröffentlichte Version. Eine Beta von 0.5 gibt es auf <a href=\"{releasesUrl}\">GitHub</a> als Vorabversion und für iPhone, iPad und Mac über <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. Version 0.3.8 enthält das Terminal, die Dateiübertragung, Tunnel, die Überwachung und die Synchronisierung, aber nicht die Remote-Desktops, Telnet, das Entsperren mit Windows Hello und Fingerabdruck, SSH-Agenten, den Ordnervergleich und alles andere, was mit 0.5 dazukommt. Ab 0.5 gibt es für Windows außerdem eine portable .zip-Datei.",
+      "betaNote": "Die Schaltflächen „Herunterladen“ öffnen die neueste Version auf <a href=\"{releasesUrl}\">GitHub</a>. Für iPhone, iPad und Mac gibt es Submarine außerdem über <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>.",
       "verifyTitle": "Ihren Download prüfen",
       "verify": [
         "Ab Version 0.5 enthält jedes Release eine Datei SHA256SUMS mit der Prüfsumme jedes Downloads.",

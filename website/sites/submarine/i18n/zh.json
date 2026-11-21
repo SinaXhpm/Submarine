@@ -406,7 +406,7 @@
           "detail": "Android 7.0 及更高版本 · .apk"
         }
       ],
-      "betaNote": "本页介绍的是 0.5 版，它正处于最后测试阶段。在它发布之前，“下载”按钮提供的是 0.3.8 版，即最新的正式版。0.5 的测试版已作为预发布版本放在 <a href=\"{releasesUrl}\">GitHub</a> 上，iPhone、iPad 和 Mac 用户可通过 <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a> 获取。0.3.8 版有终端、文件传输、隧道、监控和同步，但没有远程桌面、Telnet、Windows Hello 和指纹解锁、SSH agent、文件夹比较，以及 0.5 新增的其他功能。从 0.5 版开始，Windows 还会提供便携版 .zip。",
+      "betaNote": "“下载”按钮会打开 <a href=\"{releasesUrl}\">GitHub</a> 上的最新版本。iPhone、iPad 和 Mac 用户也可以通过 <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a> 获取 Submarine。",
       "verifyTitle": "校验下载文件",
       "verify": [
         "从 0.5 版开始，每个发布版本都附带一个 SHA256SUMS 文件，其中包含每个下载文件的校验和。",

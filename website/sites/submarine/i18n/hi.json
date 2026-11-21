@@ -406,7 +406,7 @@
           "detail": "Android 7.0 और उसके बाद के वर्ज़न · .apk"
         }
       ],
-      "betaNote": "यह पेज वर्ज़न 0.5 के बारे में है, जिसकी आख़िरी टेस्टिंग चल रही है। रिलीज़ होने तक डाउनलोड बटन वर्ज़न 0.3.8 देते हैं, जो अब तक का आख़िरी रिलीज़ है। 0.5 का बीटा <a href=\"{releasesUrl}\">GitHub</a> पर प्री-रिलीज़ के तौर पर मौजूद है, और iPhone, iPad और Mac के लिए <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a> पर। वर्ज़न 0.3.8 में टर्मिनल, फ़ाइल ट्रांसफ़र, टनल, मॉनिटरिंग और सिंक हैं, लेकिन रिमोट डेस्कटॉप, Telnet, Windows Hello और फ़िंगरप्रिंट से अनलॉक, SSH एजेंट, फ़ोल्डरों की तुलना और 0.5 में जुड़ी बाक़ी चीज़ें नहीं हैं। 0.5 से Windows के लिए एक पोर्टेबल .zip भी मिलेगा।",
+      "betaNote": "डाउनलोड बटन <a href=\"{releasesUrl}\">GitHub</a> पर सबसे नया रिलीज़ खोलते हैं। iPhone, iPad और Mac के लिए Submarine <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a> पर भी मौजूद है।",
       "verifyTitle": "अपना डाउनलोड जाँचें",
       "verify": [
         "वर्ज़न 0.5 से, हर रिलीज़ में एक SHA256SUMS फ़ाइल होती है, जिसमें हर डाउनलोड का चेकसम होता है।",

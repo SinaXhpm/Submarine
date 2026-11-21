@@ -406,7 +406,7 @@
           "detail": "Android 7.0 ve üzeri · .apk"
         }
       ],
-      "betaNote": "Bu sayfa, son testleri süren 0.5 sürümünü anlatır. 0.5 yayımlanana kadar İndir düğmeleri, yayımlanmış son sürüm olan 0.3.8'i verir. 0.5'ün betası <a href=\"{releasesUrl}\">GitHub</a>'da ön sürüm olarak, iPhone, iPad ve Mac içinse <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>'ta sunulur. 0.3.8 sürümünde terminal, dosya aktarımı, tüneller, izleme ve eşitleme vardır; ancak uzak masaüstleri, Telnet, Windows Hello ve parmak iziyle kilit açma, SSH ajanları, klasör karşılaştırma ve 0.5'ün getirdiği diğer yenilikler yoktur. 0.5'ten itibaren Windows için taşınabilir bir .zip de sunulur.",
+      "betaNote": "İndir düğmeleri, <a href=\"{releasesUrl}\">GitHub</a>'daki en son sürümü açar. iPhone, iPad ve Mac için Submarine ayrıca <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>'ta sunulur.",
       "verifyTitle": "İndirdiğiniz dosyayı doğrulayın",
       "verify": [
         "0.5 sürümünden itibaren her sürümde, indirilebilen her dosyanın sağlama toplamını içeren bir SHA256SUMS dosyası bulunur.",
