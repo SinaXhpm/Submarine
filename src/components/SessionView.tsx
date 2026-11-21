@@ -415,7 +415,7 @@ function writeFollow(on: boolean) {
 // from the server's (DesktopApp's tabNames). `profile`: the unlocked
 // profile's name, for what is kept per server on this device. `sessionShown`:
 // this session is on screen, not behind another one or another view.
-const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, shown: sessionShown = true, onPromptChange }: any) => {
+const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, onSessionTitle, isActiveView = false, shown: sessionShown = true, onPromptChange }: any) => {
   const t = useT();
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
@@ -757,6 +757,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   useEffect(() => {
     if (activeTab !== aiTermId) setUserTab(activeTab);
   }, [activeTab, aiTermId]);
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   const aiFeed = useMemo(() => createFeed(), []);
   // Known by session: a run of this server's chat on the AI page shows here too.
   useEffect(() => registerFeed(session.id, aiFeed), [session.id, aiFeed]);
@@ -794,6 +796,26 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     termFoldersRef.current.set(terminalId, next);
     if (followRef.current) setFolderTick((n) => n + 1);
   }, []);
+  // The title a program in a terminal set itself (OSC 0/2, #391), by
+  // terminal id. Only the ACTIVE terminal's title reaches the session tab
+  // (via onSessionTitle): a background terminal's title waits until its tab
+  // is selected, and a title a terminal set is remembered across tab
+  // switches. An empty title clears the entry, so the tab falls back to
+  // the rename/server name.
+  const oscTitlesRef = useRef(new Map<string, string>());
+  const onTerminalTitle = useCallback((terminalId: string, title: string) => {
+    if (oscTitlesRef.current.get(terminalId) === title) return;
+    if (title) oscTitlesRef.current.set(terminalId, title);
+    else oscTitlesRef.current.delete(terminalId);
+    if (terminalId === activeTabRef.current) onSessionTitle?.(session.id, title);
+  }, [onSessionTitle, session.id]);
+  // The session tab follows the active terminal's title: switching
+  // terminals re-reports the newly active one's title ("" when it set none).
+  useEffect(() => {
+    if (typeof onSessionTitle === "function") {
+      onSessionTitle(session.id, oscTitlesRef.current.get(activeTab) ?? "");
+    }
+  }, [activeTab, session.id, onSessionTitle]);
   // What the SFTP panel follows: the active terminal's folder, null while its
   // shell hasn't said, undefined while Follow is off.
   const followFolder = follow ? (termFoldersRef.current.get(activeTab) ?? null) : undefined;
@@ -2569,6 +2591,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   ownLogin={term.ownLogin}
                   quickAuth={session.quickAuth}
                   onFolder={term.container ? undefined : onTerminalFolder}
+                  onTitle={onTerminalTitle}
                   onClose={() => closeTerminal(term.id)}
                   onNewTerminal={openNewTerminal}
                 />
