@@ -72,6 +72,33 @@ function DefaultShellSetting({ settings, setSettings }: any) {
   );
 }
 
+// "Show program titles on tabs" (util/terminalTitle, #391). On by default.
+function ProgramTitlesSetting({ settings, setSettings }: any) {
+  const t = useT();
+  const on = settings.showTerminalTitles !== false;
+  return (
+    <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-zinc-100">{t("Show program titles on tabs")}</div>
+          <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+            {t("A program on the server can give its terminal a title, such as the folder you're in or the file you're editing. Tabs show it after their name. Off, they show only the name.")}
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={on}
+          aria-label={t("Show program titles on tabs")}
+          onClick={() => setSettings((s: any) => ({ ...s, showTerminalTitles: !(s.showTerminalTitles !== false) }))}
+          className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${on ? 'bg-primary' : 'bg-zinc-700'}`}
+        >
+          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${on ? 'left-[22px]' : 'left-0.5'}`} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // "Send keepalives" and "Reconnect automatically" (util/sessionKeep).
 function SessionKeepSettings({ settings, setSettings }: any) {
   const t = useT();
@@ -962,6 +989,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
           <TerminalColoursSetting settings={settings} setSettings={setSettings} />
 
           <TerminalScrollbackSetting settings={settings} setSettings={setSettings} />
+
+          <ProgramTitlesSetting settings={settings} setSettings={setSettings} />
 
           <DefaultShellSetting settings={settings} setSettings={setSettings} />
           

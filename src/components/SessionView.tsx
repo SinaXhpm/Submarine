@@ -415,7 +415,7 @@ function writeFollow(on: boolean) {
 // from the server's (DesktopApp's tabNames). `profile`: the unlocked
 // profile's name, for what is kept per server on this device. `sessionShown`:
 // this session is on screen, not behind another one or another view.
-const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, shown: sessionShown = true, onPromptChange }: any) => {
+const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, onSessionTitle, isActiveView = false, shown: sessionShown = true, onPromptChange }: any) => {
   const t = useT();
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
@@ -757,6 +757,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   useEffect(() => {
     if (activeTab !== aiTermId) setUserTab(activeTab);
   }, [activeTab, aiTermId]);
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   const aiFeed = useMemo(() => createFeed(), []);
   // Known by session: a run of this server's chat on the AI page shows here too.
   useEffect(() => registerFeed(session.id, aiFeed), [session.id, aiFeed]);
@@ -794,6 +796,32 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     termFoldersRef.current.set(terminalId, next);
     if (followRef.current) setFolderTick((n) => n + 1);
   }, []);
+  // The title a program in a terminal set itself (OSC 0/2, #391), by
+  // terminal id, cleaned by TerminalView (util/terminalTitle). Each terminal's
+  // tab shows its own after its name; only the ACTIVE terminal's reaches the
+  // session tab (via onSessionTitle), so a background terminal's title waits
+  // until its tab is selected. An empty title clears the entry: none was set,
+  // Settings turned titles off, or the terminal closed.
+  const oscTitlesRef = useRef(new Map<string, string>());
+  // Bump to re-render the nested tab bar when any terminal's title
+  // changes, so every split pane's tab shows its own live title
+  // (not just the active terminal's, which reaches the session tab
+  // via onSessionTitle). Mirrors the folderTick pattern above.
+  const [, setTitlesTick] = useState(0);
+  const onTerminalTitle = useCallback((terminalId: string, title: string) => {
+    if ((oscTitlesRef.current.get(terminalId) ?? "") === title) return;
+    if (title) oscTitlesRef.current.set(terminalId, title);
+    else oscTitlesRef.current.delete(terminalId);
+    setTitlesTick((n) => n + 1);
+    if (terminalId === activeTabRef.current) onSessionTitle?.(session.id, title);
+  }, [onSessionTitle, session.id]);
+  // The session tab follows the active terminal's title: switching
+  // terminals re-reports the newly active one's title ("" when it set none).
+  useEffect(() => {
+    if (typeof onSessionTitle === "function") {
+      onSessionTitle(session.id, oscTitlesRef.current.get(activeTab) ?? "");
+    }
+  }, [activeTab, session.id, onSessionTitle]);
   // What the SFTP panel follows: the active terminal's folder, null while its
   // shell hasn't said, undefined while Follow is off.
   const followFolder = follow ? (termFoldersRef.current.get(activeTab) ?? null) : undefined;
@@ -2003,6 +2031,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           // a softer accent, so the pairing is obvious at a glance.
           const isFocusedHalf = activeTab === term.id;
           const isSplitPartner = !!(splitTerminals.includes(term.id) && !isFocusedHalf);
+          const programTitle = oscTitlesRef.current.get(term.id);
           return (
           <div key={term.id} className="group relative flex items-center"
             onContextMenu={(e) => { e.preventDefault(); setTermMenu({ x: e.clientX, y: e.clientY, termId: term.id }); }}
@@ -2024,7 +2053,10 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 // a tool pane / another input) — issue #51.
                 requestTerminalFocus();
               }}
-              title={term.container ? t("Container: {name}", { name: term.container.name }) : undefined}
+              title={[
+                term.container ? t("Container: {name}", { name: term.container.name }) : "",
+                programTitle ?? "",
+              ].filter(Boolean).join("\n") || undefined}
               className={`h-10 sm:h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8 sm:pr-8' : ''} rounded-lg flex items-center gap-2 text-[12px] font-semibold transition-all ${
                 isFocusedHalf
                   ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner'
@@ -2039,6 +2071,12 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   ? <Sparkles size={14} className={aiFull ? 'text-rose-300' : undefined} />
                   : <TerminalSquare size={14} />}
               {term.ai && aiFull ? <span className="text-rose-300">{t("{title} · Full access", { title: term.title })}</span> : term.title}
+              {/* After the name, cut when long; the tooltip has all of it. */}
+              {programTitle && (
+                <span className="min-w-0 max-w-[12rem] truncate font-normal opacity-70">
+                  · <bdi>{programTitle}</bdi>
+                </span>
+              )}
               {isSplitPartner && (
                 <SplitSquareHorizontal size={10} className="text-primary/60" />
               )}
@@ -2569,6 +2607,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   ownLogin={term.ownLogin}
                   quickAuth={session.quickAuth}
                   onFolder={term.container ? undefined : onTerminalFolder}
+                  onTitle={onTerminalTitle}
                   onClose={() => closeTerminal(term.id)}
                   onNewTerminal={openNewTerminal}
                 />

@@ -32,6 +32,7 @@ import {
   readBoldBright, readCustomScheme, readMinContrast, readThemeId, schemeToWindowsTerminalJson,
 } from "./util/terminalTheme";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
+import { SHOW_TERMINAL_TITLES_KEY, readShowTerminalTitles } from "./util/terminalTitle";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
 import { AUTO_RECONNECT_KEY, DEFAULT_SESSION_KEEP, SEND_KEEPALIVES_KEY, forgetSessionKeep, readAutoReconnectDefault, readSendKeepalivesDefault, readSessionKeep, writeSessionKeep } from "./util/sessionKeep";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
@@ -141,6 +142,14 @@ function DesktopApp() {
   // lock: session ids come from each profile's server ids, so another
   // profile would reuse them.
   const [tabNames, setTabNames] = useState<Record<string, string>>({});
+  // The title a program in a terminal set itself (OSC 0/2, #391), by session
+  // id: the active terminal's, cleaned (util/terminalTitle). Shown on the tab
+  // after the name, and only there: lists, prompts and dialogs keep the
+  // server's own name. Dropped when the session closes and on lock, like
+  // tabNames: session ids come from each profile's server ids, so another
+  // profile would reuse them.
+  const [oscTitles, setOscTitles] = useState<Record<string, string>>({});
+  const clearOscTitle = (sid: string) => setOscTitles(prev => { const { [sid]: _, ...rest } = prev; return rest; });
   // The tab whose menu shows the name editor; gone with the menu.
   const [tabRename, setTabRename] = useState<string | null>(null);
   useEffect(() => { if (!tabMenu) setTabRename(null); }, [tabMenu]);
@@ -202,6 +211,21 @@ function DesktopApp() {
       const next = prev.filter(i => i.sessionId !== sid || terms.some(t => t.id === i.terminalId));
       return next.length === prev.length ? prev : next;
     });
+  }, []);
+  // A session's active terminal set (or cleared) its own title (OSC 0/2,
+  // #391). Stable identity matters: SessionView memoises on prop equality,
+  // same reasoning as handleTerminalsChange above. An unchanged title is a
+  // no-op so a program that re-sends its title doesn't re-render the app.
+  const handleSessionTitle = useCallback((sid: string, title: string) => {
+    if (title) {
+      setOscTitles(prev => (prev[sid] === title ? prev : { ...prev, [sid]: title }));
+    } else {
+      setOscTitles(prev => {
+        if (!(sid in prev)) return prev;
+        const { [sid]: _, ...rest } = prev;
+        return rest;
+      });
+    }
   }, []);
   const wallHasTerminal = (terminalId: string) => wallItems.some(i => i.terminalId === terminalId);
   const pinTerminalToWall = (sid: string, terminalId: string) => {
@@ -509,6 +533,9 @@ function DesktopApp() {
     // Off by default: terminals start the remote account's own shell, same
     // as before this setting existed. See util/terminalShell.
     useLocalShell: readUseLocalShell(),
+    // On by default: tabs show the title a program sets after their name. See
+    // util/terminalTitle.
+    showTerminalTitles: readShowTerminalTitles(),
     // On by default: logins may use keys from an ssh-agent on this computer.
     // See util/sshAgent.
     useSshAgent: readUseSshAgent(),
@@ -547,6 +574,7 @@ function DesktopApp() {
     localStorage.setItem(BOLD_BRIGHT_KEY, appSettings.terminalBoldBright ? 'on' : 'off');
     localStorage.setItem(MIN_CONTRAST_KEY, appSettings.terminalMinContrast ? 'on' : 'off');
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
+    localStorage.setItem(SHOW_TERMINAL_TITLES_KEY, appSettings.showTerminalTitles === false ? 'off' : 'on');
     localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
     // Monitoring reads it at each connect, in the background. A phone or
     // tablet has no ssh-agent (see readUseSshAgentForMonitor).
@@ -592,6 +620,7 @@ function DesktopApp() {
         setSessions(prev => prev.filter(s => s.id !== sessId));
         setSessionStatuses(prev => { const { [sessId]: _, ...rest } = prev; return rest; });
         clearTabName(sessId);
+        clearOscTitle(sessId);
         setActiveView(prev => (prev === sessId ? "nodes" : prev));
         // Purge the closing session from broadcast state so a stale id doesn't
         // linger in the target set (would let a user re-enable broadcast and
@@ -1253,6 +1282,7 @@ function DesktopApp() {
     setActiveProfile(null);
     setSessions([]);
     setTabNames({});
+    setOscTitles({});
     setActiveView("nodes");
     setServers([]); setCredentials([]); setSshKeys([]); setFolders([]); setCommands([]); setNotes([]);
     // The next profile numbers its servers from 1 too, so anything kept by
@@ -2001,6 +2031,10 @@ function DesktopApp() {
           // connected?" and "is it broadcasting?" at a glance.
           const isBroadcastTarget = broadcast.enabled && broadcast.targetSessionIds.has(s.id);
           const isMergedTab = mergedSessionIds.includes(s.id);
+          // The program's title after the name (#391). The name comes first
+          // and stays whole, so a title can't pass for another server.
+          const programTitle = oscTitles[s.id];
+          const fullLabel = programTitle ? `${tabLabel(s)} · ${programTitle}` : tabLabel(s);
           // The open tab joins the session's toolbar below it, with a line in
           // the server's own colour on top. A thin line parts two tabs where
           // neither is the open one.
@@ -2063,7 +2097,7 @@ function DesktopApp() {
               // wheel-to-horizontal scroll above), so wider tabs just mean
               // more scrolling — they never hide the name behind an ellipsis.
               // `whitespace-nowrap` keeps long names on a single line.
-              title={isMergedTab ? t("{name} · split beside current view (Ctrl-click to unpair)", { name: tabLabel(s) }) : tabLabel(s)}
+              title={isMergedTab ? t("{name} · split beside current view (Ctrl-click to unpair)", { name: fullLabel }) : fullLabel}
               className={`group no-drag relative flex items-center gap-2 h-[33px] pl-3 pr-1.5 rounded-t-lg cursor-pointer shrink-0 transition-colors ${
                 active
                   ? 'z-10 bg-[#141417] text-zinc-100 border-x border-t border-white/10'
@@ -2103,6 +2137,12 @@ function DesktopApp() {
                 className="text-[11.5px] font-semibold whitespace-nowrap tracking-tight rounded outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               >
                 {tabLabel(s)}
+                {/* A long title is cut here; the tooltip has all of it. */}
+                {programTitle && (
+                  <span className="inline-block max-w-[16rem] truncate align-bottom ml-1 font-normal opacity-70">
+                    · <bdi>{programTitle}</bdi>
+                  </span>
+                )}
               </button>
               {/* Mobile-only actions trigger. On phone we surface the same
                   tabMenu (Reconnect / Disconnect / Close) here since there
@@ -2944,6 +2984,7 @@ function DesktopApp() {
                             onReset={() => {
                               setSessions(prev => prev.filter(s => s.id !== sess.id));
                               clearTabName(sess.id);
+                              clearOscTitle(sess.id);
                               if (activeView === sess.id) setActiveView("nodes");
                             }}
                           >
@@ -2987,6 +3028,7 @@ function DesktopApp() {
                                 isActiveView={isFocused}
                                 shown={isVisible && viewIsSession}
                                 onPromptChange={handlePromptChange}
+                                onSessionTitle={handleSessionTitle}
                               />
                             ) : (
                             <SessionView
@@ -2997,6 +3039,7 @@ function DesktopApp() {
                               addLog={addLog}
                               onStatusChange={handleSessionStatus}
                               onTerminalsChange={handleTerminalsChange}
+                              onSessionTitle={handleSessionTitle}
                               chromeless={isVisible && isTiled && !isFocused}
                               isActiveView={isFocused}
                               shown={isVisible && viewIsSession}
