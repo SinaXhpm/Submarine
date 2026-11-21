@@ -16,6 +16,7 @@ import { DEFAULT_VNC_OPTIONS, normalizeVncOptions, type VncOptions } from "../ut
 import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
 import { USUAL_PORTS, isFtp, type FtpProtocol, type ServerProtocol } from "../util/serverProtocol";
+import { startupChoice, startupFields, type StartupChoice } from "../util/startupChoice";
 import { t, tn, tx, useT } from "../i18n";
 import { copyText } from "../util/clipboard";
 
@@ -1247,35 +1248,47 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </div>
             </div>
 
-            {/* Autostart toggle — when on, the node opens a session and
-                connects automatically right after the user unlocks the
-                profile. Useful for the one or two servers you always have
-                a shell on. */}
-            <div className="flex items-center justify-between gap-3 pt-1">
-              <div className="min-w-0">
-                <div className="text-[11px] font-bold text-zinc-300">{t("Autostart")}</div>
-                <div className="text-[10.5px] text-zinc-500 leading-snug">
-                  {t("Open + connect this node automatically when the app launches.")}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setNewNode({ ...newNode, autostart: !newNode.autostart })}
-                role="switch"
-                aria-label={t("Autostart")}
-                aria-checked={!!newNode.autostart}
-                className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${
-                  newNode.autostart ? "bg-primary" : "bg-white/10"
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${
-                    newNode.autostart ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </button>
-            </div>
             </>)}
+
+            {/* At startup: what this server's tab does when the profile is
+                unlocked (util/startupChoice). Open and connect is for SSH
+                servers, as autostart always was; any kind of server can open
+                its tab without connecting, to connect from it later. */}
+            {(() => {
+              const choice = startupChoice(newNode, isSsh);
+              const options: { value: StartupChoice; label: string }[] = [
+                { value: "off", label: t("Don't open") },
+                { value: "open", label: t("Open the tab") },
+                ...(isSsh ? [{ value: "connect" as const, label: t("Open and connect") }] : []),
+              ];
+              return (
+                <div className="space-y-1.5 pt-1">
+                  <div className="text-[11px] font-bold text-zinc-300">{t("At startup")}</div>
+                  <div role="group" aria-label={t("At startup")} className="flex gap-0.5 p-0.5 rounded-lg border border-white/10 bg-[#1a1a1e]">
+                    {options.map((o) => (
+                      <button
+                        key={o.value}
+                        type="button"
+                        aria-pressed={choice === o.value}
+                        onClick={() => setNewNode({ ...newNode, ...startupFields(o.value) })}
+                        className={`flex-1 min-w-0 min-h-10 sm:min-h-8 px-2 py-1 rounded-md text-[11px] font-semibold leading-tight transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
+                          choice === o.value ? "bg-primary/15 text-primary" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5"
+                        }`}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-[10.5px] text-zinc-500 leading-snug">
+                    {choice === "connect"
+                      ? t("Its tab opens and connects when you unlock the profile.")
+                      : choice === "open"
+                        ? t("Its tab opens when you unlock the profile, not connected. Connect from the tab when you need it.")
+                        : t("Nothing opens for this server when you unlock the profile.")}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* This device's own choice for this server, see util/sessionKeep. */}
             {isSsh && (

@@ -16,6 +16,8 @@ import {
 import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
 import { useT, tx } from "../i18n";
+import NotConnected from "./NotConnected";
+import { useWaitToConnect } from "../hooks/useWaitToConnect";
 import { sentenceGap } from "../util/sentences";
 import { copyText } from "../util/clipboard";
 
@@ -44,6 +46,9 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // Read once: a tab keeps the way it opened with until it's closed (a phone
   // can switch to the built-in client from the tab).
   const [builtin, setBuiltin] = useState(() => readRdpOptions(session.serverUuid).app === "builtin");
+  // A tab opened at startup without connecting waits for Connect: the tab
+  // shows it as "idle", and the status here is what it would be without it.
+  const { waiting, connectNow } = useWaitToConnect(session);
   // "idle" on a phone until the built-in client is chosen: there's no RDP app.
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "failed" | "disconnected">(
     IS_MOBILE && !builtin ? "idle" : "connecting",
@@ -95,7 +100,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const kbiFirstInputRef = useRef<HTMLInputElement | null>(null);
   const promptWaiting = !!(fingerprintPrompt || kbiPrompt);
 
-  useEffect(() => { onStatusChange?.(session.id, status); }, [onStatusChange, session.id, status]);
+  useEffect(() => { onStatusChange?.(session.id, waiting ? "idle" : status); }, [onStatusChange, session.id, status, waiting]);
   useEffect(() => { onPromptChange?.(session.id, promptWaiting); }, [onPromptChange, session.id, promptWaiting]);
   useEffect(() => () => onPromptChange?.(session.id, false), [onPromptChange, session.id]);
   useEffect(() => {
@@ -158,6 +163,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).
   useEffect(() => {
+    // Opened at startup without connecting: nothing starts until Connect.
+    if (waiting) return;
     let cancelled = false;
     const id = session.id;
     const subs = Promise.all([
@@ -241,7 +248,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       if (builtin) invoke("rdp_builtin_close", { sessionId: id }).catch(console.error);
       invoke("disconnect_session", { sessionId: id }).catch(console.error);
     };
-  }, [builtin, session.id, connect, pushLog, t]);
+  }, [builtin, session.id, connect, pushLog, t, waiting]);
 
   const handleFingerprintResponse = async (accepted: boolean) => {
     const nonce = fingerprintPrompt?.nonce;
@@ -378,6 +385,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   }, [status]);
 
   const name = displayName || session.serverName;
+  if (waiting) return <NotConnected name={name} onConnect={connectNow} onClose={onClose} />;
   const working = status === "connecting";
   const broken = status === "failed" || status === "disconnected";
   // A server without NLA was refused before anything was sent: the tab offers
