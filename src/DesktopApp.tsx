@@ -141,10 +141,22 @@ function DesktopApp() {
   // lock: session ids come from each profile's server ids, so another
   // profile would reuse them.
   const [tabNames, setTabNames] = useState<Record<string, string>>({});
+  // Title a program in a terminal set itself (OSC 0/2, #391), by session
+  // id — the active terminal's title, reported up by SessionView. Shown on
+  // the session tab while non-empty. Dropped when the session closes and on
+  // lock, like tabNames: session ids come from each profile's server ids,
+  // so another profile would reuse them.
+  const [oscTitles, setOscTitles] = useState<Record<string, string>>({});
+  const clearOscTitle = (sid: string) => setOscTitles(prev => { const { [sid]: _, ...rest } = prev; return rest; });
   // The tab whose menu shows the name editor; gone with the menu.
   const [tabRename, setTabRename] = useState<string | null>(null);
   useEffect(() => { if (!tabMenu) setTabRename(null); }, [tabMenu]);
-  const tabLabel = (s: Session) => tabNames[s.id] ?? s.serverName;
+  // The terminal-set title wins while present, as in PuTTY; otherwise the
+  // rename, else the server name.
+  const tabLabel = (s: Session) => {
+    const osc = oscTitles[s.id];
+    return osc ? osc : (tabNames[s.id] ?? s.serverName);
+  };
   const clearTabName = (sid: string) => setTabNames(prev => { const { [sid]: _, ...rest } = prev; return rest; });
   // Sessions merged into the current session-view canvas. When a session
   // tab is being viewed and this set is non-empty, its SessionView renders
@@ -202,6 +214,21 @@ function DesktopApp() {
       const next = prev.filter(i => i.sessionId !== sid || terms.some(t => t.id === i.terminalId));
       return next.length === prev.length ? prev : next;
     });
+  }, []);
+  // A session's active terminal set (or cleared) its own title (OSC 0/2,
+  // #391). Stable identity matters: SessionView memoises on prop equality,
+  // same reasoning as handleTerminalsChange above. An unchanged title is a
+  // no-op so a program that re-sends its title doesn't re-render the app.
+  const handleSessionTitle = useCallback((sid: string, title: string) => {
+    if (title) {
+      setOscTitles(prev => (prev[sid] === title ? prev : { ...prev, [sid]: title }));
+    } else {
+      setOscTitles(prev => {
+        if (!(sid in prev)) return prev;
+        const { [sid]: _, ...rest } = prev;
+        return rest;
+      });
+    }
   }, []);
   const wallHasTerminal = (terminalId: string) => wallItems.some(i => i.terminalId === terminalId);
   const pinTerminalToWall = (sid: string, terminalId: string) => {
@@ -592,6 +619,7 @@ function DesktopApp() {
         setSessions(prev => prev.filter(s => s.id !== sessId));
         setSessionStatuses(prev => { const { [sessId]: _, ...rest } = prev; return rest; });
         clearTabName(sessId);
+        clearOscTitle(sessId);
         setActiveView(prev => (prev === sessId ? "nodes" : prev));
         // Purge the closing session from broadcast state so a stale id doesn't
         // linger in the target set (would let a user re-enable broadcast and
@@ -1253,6 +1281,7 @@ function DesktopApp() {
     setActiveProfile(null);
     setSessions([]);
     setTabNames({});
+    setOscTitles({});
     setActiveView("nodes");
     setServers([]); setCredentials([]); setSshKeys([]); setFolders([]); setCommands([]); setNotes([]);
     // The next profile numbers its servers from 1 too, so anything kept by
@@ -2944,6 +2973,7 @@ function DesktopApp() {
                             onReset={() => {
                               setSessions(prev => prev.filter(s => s.id !== sess.id));
                               clearTabName(sess.id);
+                              clearOscTitle(sess.id);
                               if (activeView === sess.id) setActiveView("nodes");
                             }}
                           >
@@ -2987,6 +3017,7 @@ function DesktopApp() {
                                 isActiveView={isFocused}
                                 shown={isVisible && viewIsSession}
                                 onPromptChange={handlePromptChange}
+                                onSessionTitle={handleSessionTitle}
                               />
                             ) : (
                             <SessionView
@@ -2997,6 +3028,7 @@ function DesktopApp() {
                               addLog={addLog}
                               onStatusChange={handleSessionStatus}
                               onTerminalsChange={handleTerminalsChange}
+                              onSessionTitle={handleSessionTitle}
                               chromeless={isVisible && isTiled && !isFocused}
                               isActiveView={isFocused}
                               shown={isVisible && viewIsSession}

@@ -207,6 +207,7 @@ const TerminalView = ({
   ownLogin = false,
   quickAuth = null,
   onFolder,
+  onTitle,
   onClose,
   onNewTerminal,
 }: {
@@ -289,6 +290,10 @@ const TerminalView = ({
   /// util/shellFolder), for the SFTP panel's Follow (#245). Reported at
   /// every prompt; the parent keeps what changed.
   onFolder?: (terminalId: string, path: string, host: string) => void;
+  /// The title a program in this terminal set itself (OSC 0/2, #391),
+  /// for the session tab. Reported on every change; an empty title means
+  /// "no title" and the parent falls back to the rename/server name.
+  onTitle?: (terminalId: string, title: string) => void;
   /// Closes the parent session tab.
   onClose?: () => void;
   /// Opens another terminal in the parent session.
@@ -514,6 +519,8 @@ const TerminalView = ({
   confirmRef.current = confirm;
   const onFolderRef = useRef(onFolder);
   onFolderRef.current = onFolder;
+  const onTitleRef = useRef(onTitle);
+  onTitleRef.current = onTitle;
   // The terminal's input handler (what xterm's onData runs), for keys that
   // don't come from xterm itself — the mobile key bar's arrows and symbols.
   const inputRef = useRef<((data: string) => void) | null>(null);
@@ -1016,6 +1023,12 @@ const TerminalView = ({
     };
     term.parser.registerOscHandler(7, (data) => { folder(parseOsc7(data)); return true; });
     term.parser.registerOscHandler(1337, (data) => folder(parseOsc1337(data)));
+    // The title a program sets itself (OSC 0/2, #391): xterm parses the
+    // sequence and fires this on every change. The parent shows it on the
+    // session tab while it is non-empty.
+    const titleDisposable = term.onTitleChange((title) => {
+      onTitleRef.current?.(terminalId, title);
+    });
     term.open(terminalRef.current);
 
     // A scroll redraws the selection, and the DOM renderer draws every row for
@@ -2020,6 +2033,7 @@ const TerminalView = ({
       window.removeEventListener('submarine-settings-changed', handleSettingsChange);
       resizeObserver.disconnect();
       onDataDisposable.dispose();
+      titleDisposable.dispose();
       term.textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
       term.textarea?.removeEventListener("compositionend", onCompositionEnd);
       term.element?.removeEventListener("keydown", onAndroidKeyDown, true);

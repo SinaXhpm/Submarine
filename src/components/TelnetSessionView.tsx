@@ -19,7 +19,7 @@ type Status = "connecting" | "connected" | "failed" | "disconnected";
 
 const NOT_ENCRYPTED = tk("Telnet isn't encrypted: what is typed here, passwords too, crosses the network as plain text.");
 
-export default function TelnetSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
+export default function TelnetSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange, onSessionTitle }: any) {
   const t = useT();
   const [status, setStatus] = useState<Status>("connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
@@ -237,6 +237,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
             connectionEpoch={epoch}
             serverId={session.serverId}
             serverName={session.serverName}
+            onTitle={(_tid, title) => onSessionTitle?.(session.id, title)}
           />
           {broken && reason && (
             <div className="absolute left-3 right-3 top-3 z-20 px-3 py-2 rounded-lg border border-red-500/20 bg-[#1a0f10]/95 text-[12px] text-red-300/90 break-words">
