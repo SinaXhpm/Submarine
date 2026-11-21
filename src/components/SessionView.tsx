@@ -803,10 +803,16 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // switches. An empty title clears the entry, so the tab falls back to
   // the rename/server name.
   const oscTitlesRef = useRef(new Map<string, string>());
+  // Bump to re-render the nested tab bar when any terminal's title
+  // changes, so every split pane's tab shows its own live title
+  // (not just the active terminal's, which reaches the session tab
+  // via onSessionTitle). Mirrors the folderTick pattern above.
+  const [, setTitlesTick] = useState(0);
   const onTerminalTitle = useCallback((terminalId: string, title: string) => {
     if (oscTitlesRef.current.get(terminalId) === title) return;
     if (title) oscTitlesRef.current.set(terminalId, title);
     else oscTitlesRef.current.delete(terminalId);
+    setTitlesTick((n) => n + 1);
     if (terminalId === activeTabRef.current) onSessionTitle?.(session.id, title);
   }, [onSessionTitle, session.id]);
   // The session tab follows the active terminal's title: switching
@@ -2046,7 +2052,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 // a tool pane / another input) — issue #51.
                 requestTerminalFocus();
               }}
-              title={term.container ? t("Container: {name}", { name: term.container.name }) : undefined}
+              title={oscTitlesRef.current.get(term.id) ?? (term.container ? t("Container: {name}", { name: term.container.name }) : undefined)}
               className={`h-10 sm:h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8 sm:pr-8' : ''} rounded-lg flex items-center gap-2 text-[12px] font-semibold transition-all ${
                 isFocusedHalf
                   ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner'
@@ -2060,7 +2066,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 : term.ai
                   ? <Sparkles size={14} className={aiFull ? 'text-rose-300' : undefined} />
                   : <TerminalSquare size={14} />}
-              {term.ai && aiFull ? <span className="text-rose-300">{t("{title} · Full access", { title: term.title })}</span> : term.title}
+              {term.ai && aiFull ? <span className="text-rose-300">{t("{title} · Full access", { title: term.title })}</span> : (oscTitlesRef.current.get(term.id) || term.title)}
               {isSplitPartner && (
                 <SplitSquareHorizontal size={10} className="text-primary/60" />
               )}
