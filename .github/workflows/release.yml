@@ -713,8 +713,9 @@ jobs:
             -o -name "*.pkg.tar.zst" \
             -o -name "*.apk" \
             \) -exec cp {} release-files/ \;
-          # The unsigned APK is only the signing job's input.
-          rm -f release-files/*-unsigned.apk
+          # The unsigned APK is only the signing job's input, and so is the DMG
+          # window (apple.yml: an empty app in the window mac-sign fills in).
+          rm -f release-files/*-unsigned.apk release-files/mac-dmg-window.dmg
           ls -la release-files/
 
       # What the files were when they were attached: to check a download against.
