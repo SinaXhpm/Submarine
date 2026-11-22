@@ -215,7 +215,9 @@ enum ProfileLock {
 ///
 /// The lock is a held lock on `<name>.submarine.lock`, not the file's mere
 /// existence, so it can never be left behind: the system lets go of it when the
-/// process ends, however it ends.
+/// process ends, however it ends. That can take a while (a file still being
+/// written to a network folder holds it up), so on exit the lock goes as soon
+/// as the last save is done.
 fn lock_profile(state: &DbState, path: &Path) -> Result<ProfileLock, String> {
     let held_here = state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")?
         .as_ref()
@@ -27039,11 +27041,20 @@ pub fn run() {
                 // What is only in memory goes to the vault: the commands typed
                 // since the last save (cmd_history_add doesn't save). With no
                 // profile open there is nothing to save, and this says so.
-                let _ = save_vault_internal(&_app.state::<DbState>());
+                let state = _app.state::<DbState>();
+                let _ = save_vault_internal(&state);
                 // And the assistant's store (chats, settings).
                 ai::save_on_exit();
                 // The decrypted copies this run staged go with it.
                 sweep_app_temp(true);
+                // Nothing writes the profile any more: the next start may open
+                // it now. Left to the end of the process, the lock stayed as
+                // long as a copy to a folder that doesn't answer (#400).
+                if let Ok(mut held) = state.profile_lock.lock() {
+                    held.take();
+                }
+                // The copy the last save started, so it isn't cut off.
+                folder_copy::wait_for_copies(std::time::Duration::from_secs(5));
             }
         });
 }

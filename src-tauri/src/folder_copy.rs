@@ -20,6 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// The settings file, beside the profiles.
 const SETTINGS: &str = "folder-copies.json";
@@ -175,6 +176,22 @@ fn work() {
     }
 }
 
+/// On exit: waits until the copies still waiting or being written are done, at
+/// most `limit`. Without it the app ended in the middle of the copy its last
+/// save started, so that copy never arrived (#400). A folder that doesn't
+/// answer, a cloud drive that hangs, isn't waited for past `limit`. Says
+/// whether they are done.
+pub fn wait_for_copies(limit: Duration) -> bool {
+    let until = Instant::now() + limit;
+    while RUNNING.load(Ordering::SeqCst) {
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
 /// A copy now, of the profile's file as it is on disk.
 pub fn copy_now(vault: &Path) -> Result<(), String> {
     let dir = folder(vault).ok_or("No folder is set for a copy of this profile.")?;
@@ -235,13 +252,27 @@ mod tests {
     }
 
     fn wait_for_worker() {
-        for _ in 0..200 {
-            if !RUNNING.load(Ordering::SeqCst) && QUEUE.lock().unwrap().is_empty() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("the worker didn't finish");
+        assert!(wait_for_copies(Duration::from_secs(2)), "the worker didn't finish");
+        assert!(QUEUE.lock().unwrap().is_empty());
+    }
+
+    // The wait on exit: up to its limit for a copy that hangs (the WRITING
+    // lock held here stands for a folder that doesn't answer), and the copy
+    // done once the folder takes it.
+    #[test]
+    fn the_wait_on_exit_has_a_limit_and_sees_the_copy_done() {
+        let (vault, dest) = setup("exit");
+        set(&vault, Some(&dest)).unwrap();
+        let hang = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        after_save(&vault, b"saved on exit");
+        let start = Instant::now();
+        assert!(!wait_for_copies(Duration::from_millis(100)));
+        assert!(start.elapsed() >= Duration::from_millis(100));
+        assert!(!dest.join("Work.submarine").exists());
+        drop(hang);
+        assert!(wait_for_copies(Duration::from_secs(2)));
+        assert_eq!(fs::read(dest.join("Work.submarine")).unwrap(), b"saved on exit");
+        assert!(!dest.join("Work.submarine.tmp").exists());
     }
 
     #[test]
