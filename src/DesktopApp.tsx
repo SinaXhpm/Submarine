@@ -132,6 +132,7 @@ function sessionOf(server: any): Session {
 function DesktopApp() {
   const t = useT();
   const [isUnlocked, setIsUnlocked] = useState(false);
+  const [tailcatAvailable, setTailcatAvailable] = useState(false);
   // Multi-exec broadcast state lives in a shared provider (see App.tsx) so
   // TerminalView instances across every tab can read `enabled` + `targets`
   // without prop-drilling. The pill in the tab strip is the toggle + picker.
@@ -422,6 +423,7 @@ function DesktopApp() {
     // *after* they've saved a few credentials and want to reuse one.
     authType: "custom_pass", credentialId: "", folderId: "", keyId: "",
     proxyType: "none", proxyHost: "", proxyPort: 1080,
+    transport: "direct", tailcatAddress: "",
     tunnels: [] as { local: string, remote: string, type: string, name?: string, stopped?: boolean }[],
     // At startup: autostart = open the tab and connect (SSH servers only);
     // autoOpen = open the tab without connecting (any kind of server).
@@ -1084,6 +1086,7 @@ function DesktopApp() {
     setIsUnlocked(true);
     addLog(t('Profile "{name}" unlocked.', { name }), "success");
     refreshAll();
+    invoke<boolean>("tailcat_available").then(setTailcatAvailable).catch(() => setTailcatAvailable(false));
     // Attribute future edits to the signed-in cloud account so shared/multi-
     // device profiles show "last edited by <email>". Best-effort; unattributed
     // when not signed in.
@@ -1319,6 +1322,7 @@ function DesktopApp() {
     // Reset all client state so the picker starts fresh — no stale
     // servers/credentials/sessions leaking across profile contexts.
     setIsUnlocked(false);
+    setTailcatAvailable(false);
     setActiveProfile(null);
     setSessions([]);
     setTabNames({});
@@ -1448,9 +1452,10 @@ function DesktopApp() {
     }
     const sessionId = `session-quick-${Date.now()}`;
     // No `user@` when the username is left blank (asked at connect, #54).
+    const targetHost = auth.transport === "tailcat" ? "Tailcat" : auth.host;
     const displayName = auth.username
-      ? `${auth.username}@${auth.host}:${auth.port}`
-      : `${auth.host}:${auth.port}`;
+      ? `${auth.username}@${targetHost}:${auth.port}`
+      : `${targetHost}:${auth.port}`;
     setSessions((prev: Session[]) => [...prev, {
       id: sessionId,
       serverId: 0,
@@ -1477,6 +1482,7 @@ function DesktopApp() {
     // sheet — that way the password never sits in renderer memory during
     // the normal grid/sidebar lifetime.
     let revealedPassword = "";
+    let revealedTailcatAddress = "";
     if (server.has_password) {
       try {
         const v = await invoke<string | null>("reveal_server_password", { id: server.id });
@@ -1484,6 +1490,10 @@ function DesktopApp() {
       } catch (e) {
         addLog(`REVEAL_PASSWORD_FAILED: ${e}`, "error");
       }
+    }
+    if (server.transport === "tailcat" && server.has_tailcat_address) {
+      try { revealedTailcatAddress = await invoke<string | null>("reveal_server_tailcat_address", { id: server.id }) || ""; }
+      catch (e) { addLog(`REVEAL_TAILCAT_ADDRESS_FAILED: ${e}`, "error"); }
     }
     setNewNode({
       id: server.id,
@@ -1504,6 +1514,8 @@ function DesktopApp() {
       proxyType: server.proxy_type || "none",
       proxyHost: server.proxy_host || "",
       proxyPort: server.proxy_port || 1080,
+      transport: server.transport || "direct",
+      tailcatAddress: revealedTailcatAddress,
       tunnels: parseObjectList(server.tunnels).map(normalizeTunnel),
       autostart: !!server.autostart,
       autoOpen: !!server.auto_open,
@@ -3657,9 +3669,10 @@ function DesktopApp() {
         newNode={newNode} setNewNode={setNewNode}
         isEditMode={!!newNode.id}
         onSave={async () => {
-          if (!newNode.name || !newNode.host) {
-            setFormError(t("Name and Host are required."));
-            addLog(t("Name and Host are required."), "error");
+          if (!newNode.name || (newNode.transport === "tailcat" ? !newNode.tailcatAddress?.trim().startsWith("tc") : !newNode.host)) {
+            const message = newNode.transport === "tailcat" ? t("Name and a valid Tailcat address are required.") : t("Name and Host are required.");
+            setFormError(message);
+            addLog(message, "error");
             return;
           }
           if (newNode.authType === "vault" && !newNode.credentialId) {
@@ -3709,6 +3722,8 @@ function DesktopApp() {
               // An FTP server keeps its mirrors (they work over FTP too).
               mirrors: ftpServer ? (newNode.mirrors || []) : [],
               color: newNode.color ?? null,
+              transport: "direct",
+              tailcatAddress: null,
               preservePassword: !!newNode.id && !newNode.password_dirty,
             } : {
               name: newNode.name,
@@ -3735,12 +3750,24 @@ function DesktopApp() {
               autostart: !!newNode.autostart,
               mirrors: newNode.mirrors || [],
               color: newNode.color ?? null,
+              transport: newNode.transport || "direct",
+              tailcatAddress: newNode.transport === "tailcat" ? newNode.tailcatAddress || null : null,
               // Edit-mode + untouched password field = ask the backend to
               // keep the existing column. Otherwise the bind below sends
               // whatever's in the field (including empty / null) which
               // would overwrite the DB value.
               preservePassword: !!newNode.id && !newNode.password_dirty,
             };
+            // The backend rejects a Tailcat transport on a profile whose
+            // stored protocol is not SSH. When the form changes an existing
+            // non-SSH node to SSH + Tailcat, commit that protocol transition
+            // first; the remaining edits still go through the normal save.
+            if (newNode.id && newNode.transport === "tailcat") {
+              const previous = servers.find((server: any) => server.id === newNode.id);
+              if (previous && previous.protocol && previous.protocol !== "ssh") {
+                await invoke("set_server_protocol", { id: newNode.id, value: null, persist: false });
+              }
+            }
             // These writes share one save, at the end: each writes the whole vault.
             const action = newNode.id
               ? invoke<void>("edit_server", { id: newNode.id, ...payload, persist: false }).then(() => newNode.id!)
@@ -3857,6 +3884,7 @@ function DesktopApp() {
         refreshServers={refreshServers}
         servers={servers}
         isMobile={isMobile}
+        tailcatAvailable={tailcatAvailable}
       />
       </ErrorBoundary>
       )}
@@ -3867,6 +3895,7 @@ function DesktopApp() {
           isOpen={isQuickConnectOpen}
           onClose={() => setIsQuickConnectOpen(false)}
           onConnect={openQuickConnect}
+          tailcatAvailable={tailcatAvailable}
         />
       </ErrorBoundary>
       )}

@@ -87,7 +87,7 @@ type ImportedSshKey = {
   encrypted: boolean;
 };
 
-const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, refreshSshKeys, folders, refreshFolders, refreshServers, servers, isEditMode, formError, isMobile }: any) => {
+const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, refreshSshKeys, folders, refreshFolders, refreshServers, servers, isEditMode, formError, isMobile, tailcatAvailable }: any) => {
   const t = useT();
   // How a mirror's patterns are read (mirror.rs `Pattern`), as the Mirror panel says it.
   const patternHelp = t("A name with * or ? is a pattern (*.sql, v?.txt). With a / it starts at the mirrored folder (db/*.sql), and a / at the end means folders only (cache/). Other text is found anywhere in the path.");
@@ -112,7 +112,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     const usual = USUAL_PORTS;
     const port = !newNode.port || Object.values(usual).includes(newNode.port) ? usual[protocol] : newNode.port;
     const authType = protocol !== "ssh" && newNode.authType === "custom_key" ? "custom_pass" : newNode.authType;
-    setNewNode({ ...newNode, protocol, port, authType });
+    setNewNode({ ...newNode, protocol, port, authType, ...(protocol !== "ssh" ? { transport: "direct", tailcatAddress: "" } : {}) });
   };
   const [newFolderName, setNewFolderName] = useState("");
   // Set while the native key picker is open so the Browse button can't be
@@ -723,16 +723,25 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </div>
             </div>
 
+            {isSsh && (tailcatAvailable || newNode.transport === "tailcat") && (
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Transport")}</label>
+                <select className="w-full h-9 bg-shade-1a1a1e rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50" value={newNode.transport || "direct"} onChange={e => setNewNode({ ...newNode, transport: e.target.value, proxyType: e.target.value === "tailcat" ? "none" : newNode.proxyType, jumpHostId: e.target.value === "tailcat" ? "" : newNode.jumpHostId })}>
+                  <option value="direct">{t("Direct")}</option><option value="tailcat" disabled={!tailcatAvailable}>Tailcat{tailcatAvailable ? "" : " (not included in this build)"}</option>
+                </select>
+              </div>
+            )}
             <div className="grid grid-cols-4 gap-4">
               <div className="col-span-3 space-y-1.5">
-                <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Host")}</label>
-                <input type="text" className="w-full h-9 bg-shade-1a1a1e rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-shade-232328 transition-all shadow-inner" placeholder={t("192.168.1.1 or example.com")} value={newNode.host} onChange={e => setNewNode({ ...newNode, host: e.target.value })} />
+                <label className="text-[11px] font-bold text-zinc-400 ml-1">{newNode.transport === "tailcat" ? t("Tailcat address") : t("Host")}</label>
+                <input type={newNode.transport === "tailcat" ? "password" : "text"} autoComplete="off" className="w-full h-9 bg-shade-1a1a1e rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-shade-232328 transition-all shadow-inner" placeholder={newNode.transport === "tailcat" ? "tc…" : t("192.168.1.1 or example.com")} value={newNode.transport === "tailcat" ? (newNode.tailcatAddress || "") : newNode.host} onChange={e => newNode.transport === "tailcat" ? setNewNode({ ...newNode, tailcatAddress: e.target.value }) : setNewNode({ ...newNode, host: e.target.value })} />
               </div>
               <div className="space-y-1.5">
                 <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Port")}</label>
                 <input type="number" className="w-full h-9 bg-shade-1a1a1e rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-shade-232328 transition-all shadow-inner" value={newNode.port} onChange={e => setNewNode({ ...newNode, port: parseInt(e.target.value) })} />
               </div>
             </div>
+            {newNode.transport === "tailcat" && <p className="text-[10px] leading-relaxed text-amber-200/80">{t("This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.")}</p>}
 
           </div>
 
@@ -892,14 +901,14 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {(isSsh || ftp) && (<>
             <div className="flex justify-between items-center">
               <label className="text-[11px] font-bold text-zinc-400">{t("Proxy")}</label>
-              <select className="bg-transparent text-[12px] font-bold text-zinc-300 outline-none cursor-pointer" value={newNode.proxyType} onChange={e => setNewNode({ ...newNode, proxyType: e.target.value })}>
+              <select disabled={newNode.transport === "tailcat"} className="bg-transparent text-[12px] font-bold text-zinc-300 outline-none cursor-pointer disabled:opacity-40" value={newNode.transport === "tailcat" ? "none" : newNode.proxyType} onChange={e => setNewNode({ ...newNode, proxyType: e.target.value })}>
                 <option value="none" className="bg-shade-121215 text-zinc-400">{t("No proxy")}</option>
                 <option value="socks5" className="bg-shade-121215 text-zinc-400">SOCKS5</option>
                 <option value="http" className="bg-shade-121215 text-zinc-400">HTTP</option>
               </select>
             </div>
 
-            {newNode.proxyType !== 'none' && (
+            {newNode.transport !== "tailcat" && newNode.proxyType !== 'none' && (
               <div className="grid grid-cols-4 gap-3 animate-in fade-in">
                 <input
                   className="col-span-3 h-9 bg-shade-1a1a1e rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner"
@@ -926,8 +935,9 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             <div className="flex justify-between items-center gap-3">
               <label className="text-[11px] font-bold text-zinc-400 shrink-0">{isSsh ? t("Jump via") : t("Through SSH server")}</label>
               <select
+                disabled={newNode.transport === "tailcat"}
                 className="flex-1 min-w-0 h-9 bg-shade-1a1a1e rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-shade-232328 transition-all shadow-inner"
-                value={newNode.jumpHostId || ""}
+                value={newNode.transport === "tailcat" ? "" : (newNode.jumpHostId || "")}
                 onChange={e => setNewNode({ ...newNode, jumpHostId: e.target.value })}
               >
                 <option value="" className="bg-shade-1a1a1e text-zinc-500">{isSsh ? t("Direct — no jump host") : t("Direct — no SSH server")}</option>
