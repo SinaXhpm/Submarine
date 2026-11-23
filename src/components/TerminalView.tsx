@@ -1063,6 +1063,24 @@ const TerminalView = ({
       };
     }
 
+    // When xterm's scroll area gets shorter (`clear` erases the scrollback
+    // too), the browser moves the scroll position up to fit and tells xterm a
+    // frame later. If more output came in meanwhile, as with
+    // `clear; seq 1 400` on one line, xterm took that for the user scrolling
+    // up: the view stayed at the top and stopped following the output. That
+    // move comes from xterm, so it is ignored like the ones xterm makes
+    // itself. A private field: if it isn't there, xterm goes on as it was.
+    const viewport = (term as any)._core?.viewport;
+    if (typeof viewport?._innerRefresh === 'function' && typeof viewport._ignoreNextScrollEvent === 'boolean' && viewport._viewportElement) {
+      const syncViewport = viewport._innerRefresh.bind(viewport);
+      viewport._innerRefresh = () => {
+        const box: HTMLElement = viewport._viewportElement;
+        const before = box.scrollTop;
+        syncViewport();
+        if (!viewport._ignoreNextScrollEvent && box.scrollTop !== before) viewport._ignoreNextScrollEvent = true;
+      };
+    }
+
     // The cursor blinks while the terminal is in use and holds still
     // CURSOR_BLINK_IDLE_MS after the last key, click or focus, the way Windows
     // and GNOME stop a caret blinking. xterm's DOM renderer blinks with a CSS
