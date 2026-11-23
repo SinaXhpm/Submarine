@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Terminal } from 'xterm';
 import { disposeTerminal } from '../util/xtermDispose';
 import { FitAddon } from 'xterm-addon-fit';
@@ -6,7 +6,7 @@ import { SearchAddon, ISearchOptions } from 'xterm-addon-search';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import 'xterm/css/xterm.css';
-import { ClipboardPaste, KeyRound } from 'lucide-react';
+import { ClipboardPaste, Copy, KeyRound, TextSelect } from 'lucide-react';
 import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
@@ -26,6 +26,7 @@ import {
   type ShortcutAction,
 } from '../util/shortcuts';
 import { lastInputWasTouch } from '../util/lastInput';
+import { allText, cellCount, isBefore, ordered, wordAt, type Cell, type CellRange } from '../util/touchSelect';
 import { hardwareKeyboardAttached } from '../util/hardwareKeyboard';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
@@ -187,6 +188,39 @@ const CURSOR_BLINK_IDLE_MS = 10_000;
 // At the shell, a key starts a blink again that a program stopped, though not
 // more often than this (see markUsed).
 const BLINK_RESTART_MS = 1_000;
+// Selecting text by touch (#324): a finger held this long without moving is a
+// long press (Android's own wait is 400 to 500 ms), and it may drift this far
+// and still be a long press or a tap. A finger dragging the selection past the
+// top or bottom row scrolls a line this often.
+const LONG_PRESS_MS = 500;
+const TOUCH_SLOP_PX = 10;
+const SELECT_SCROLL_MS = 60;
+
+/** Where the touch selection's bar and handles go, in the pane (see longPress). */
+type TouchUi = {
+  /** The bar: x is its middle, y its bottom edge, or its top edge when below. */
+  menu: { x: number; y: number; below: boolean };
+  /** A selection is on: its handles, Copy and Select all show. Without one the bar only has Paste. */
+  copy: boolean;
+  /** Under the first cell's left edge and the last cell's right edge; null off the screen. */
+  start: TouchHandleAt | null;
+  end: TouchHandleAt | null;
+};
+/** A handle's corner; flip: it hangs to the other side, as it would leave the pane. */
+type TouchHandleAt = { x: number; y: number; flip: boolean };
+type TouchHandle = 'start' | 'end';
+/** How far a handle's 40 px box reaches past its corner, to the left (start) or the right (end). */
+const TOUCH_HANDLE_REACH = 28;
+const TOUCH_MENU_BUTTON = 'h-10 px-3 flex items-center gap-1.5 whitespace-nowrap text-[13px] font-semibold text-zinc-100 active:bg-zinc-700';
+type TouchSelectApi = {
+  grab: (which: TouchHandle) => void;
+  drag: (clientX: number, clientY: number, which: TouchHandle) => void;
+  drop: () => void;
+  copy: () => void;
+  paste: () => void;
+  selectAll: () => void;
+};
+
 // A pinch, by touch or on a trackpad, changes the text size at most this
 // often (see zoomTo), and only once the fingers have moved this much nearer or
 // apart.
@@ -891,18 +925,57 @@ const TerminalView = ({
     toastTimerRef.current = window.setTimeout(() => setToast(null), 1400);
   };
 
-  // A long press on a touch screen shows a Paste button by the finger (see
-  // onContextMenu), and only a tap on it pastes: people long-press on a
-  // phone to select or to look, and a pasted line that ends in a line break
-  // would run. Any other touch, key or scroll takes the button away.
-  const [pasteAt, setPasteAt] = useState<{ x: number; y: number } | null>(null);
-  const pasteClipboardRef = useRef<((toast: boolean) => Promise<void>) | null>(null);
+  // A long press on a touch screen (see longPress): on text it selects the
+  // word, with a handle at each end and a bar with Copy, Paste and Select
+  // all; on a blank cell the bar only has Paste. Only a tap on Paste pastes:
+  // people long-press on a phone to select or to look, and a pasted line that
+  // ends in a line break would run. The Paste-only bar goes with any other
+  // touch, key or scroll; a selection ends with a tap (see dismissTouch).
+  const [touchUi, setTouchUi] = useState<TouchUi | null>(null);
+  const touchSelectRef = useRef<TouchSelectApi | null>(null);
+  const touchMenuRef = useRef<HTMLDivElement | null>(null);
+  // The bar is kept inside the pane, measured, since its width depends on the language.
+  useLayoutEffect(() => {
+    const el = touchMenuRef.current;
+    const pane = el?.parentElement;
+    if (!touchUi || !el || !pane) return;
+    const room = Math.max(pane.clientWidth - el.offsetWidth - 8, 8);
+    el.style.left = `${Math.min(Math.max(touchUi.menu.x - el.offsetWidth / 2, 8), room)}px`;
+  }, [touchUi]);
+  // A handle follows its finger anywhere until it lifts, also once the
+  // handle has moved away from under it.
+  const grabHandle = (e: React.PointerEvent<HTMLDivElement>, which: TouchHandle, at: { x: number; y: number }) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const api = touchSelectRef.current;
+    const pane = e.currentTarget.parentElement?.getBoundingClientRect();
+    if (!api || !pane) return;
+    const dx = e.clientX - (pane.left + at.x);
+    const dy = e.clientY - (pane.top + at.y);
+    const id = e.pointerId;
+    api.grab(which);
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== id) return;
+      ev.preventDefault();
+      api.drag(ev.clientX - dx, ev.clientY - dy, which);
+    };
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== id) return;
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('pointercancel', up, true);
+      api.drop();
+    };
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('pointercancel', up, true);
+  };
   useEffect(() => {
-    if (!pasteAt) return;
-    const hide = () => setPasteAt(null);
+    if (!touchUi || touchUi.copy) return;
+    const hide = () => setTouchUi(null);
     const timer = window.setTimeout(hide, 6000);
     const onDown = (e: PointerEvent) => {
-      if (!(e.target instanceof Element && e.target.closest('[data-paste-button]'))) hide();
+      if (!(e.target instanceof Element && e.target.closest('[data-touch-ui]'))) hide();
     };
     window.addEventListener('pointerdown', onDown, true);
     window.addEventListener('keydown', hide, true);
@@ -913,7 +986,7 @@ const TerminalView = ({
       window.removeEventListener('keydown', hide, true);
       window.removeEventListener('wheel', hide, true);
     };
-  }, [pasteAt]);
+  }, [touchUi]);
 
   // The output ends in a password prompt (sudo, su, …): a button offers to
   // type a saved password there (#28). The next key typed or more output
@@ -1588,7 +1661,6 @@ const TerminalView = ({
       catch { notify(t('Clipboard read denied'), 'err'); return; }
       await pasteText(text, toast);
     };
-    pasteClipboardRef.current = pasteClipboard;
     // Ctrl+V, Ctrl+Shift+V, Shift+Insert and a phone's paste menu would reach
     // xterm's own paste. They go through pasteText instead, like a right-click,
     // so control characters and the question about several lines apply to
@@ -1599,23 +1671,236 @@ const TerminalView = ({
       ev.stopImmediatePropagation();
       void pasteText(raw, false);
     };
+    // Selecting text by touch (#324). A long press on text selects its word
+    // and shows the bar and the handles; the finger, still down, or a handle
+    // then moves an end. A long press on a blank cell shows only Paste. A tap
+    // ends the selection. xterm selects only by mouse, so the cells go to
+    // term.select(); xterm keeps the selection (also as the scrollback is
+    // trimmed), and the handles are put where it says. The press is timed
+    // here: iOS sends no context menu for a touch. Where that comes first
+    // (Android, a Windows touch screen), it makes the same long press.
+    let pressTimer: number | undefined;
+    let pressFrom: { x: number; y: number } | null = null; // until the finger moves away or lifts
+    let pressed = false; // the timer made this touch's long press
+    let pressDone = false; // this touch made a long press, by the timer or a context menu
+    let pressWord: CellRange | null = null; // the long-pressed word, while its finger stays down
+    let tapFrom: { x: number; y: number } | null = null; // a touch that may be a tap ending the selection
+    let touchSelecting = false;
+    let touchUiKey = '';
+    let selectCols = term.cols;
+    let grabbed: Cell | null = null; // the end that stays while a handle moves
+    let scrollTimer: number | undefined;
+    let scrollStep = 0;
+    let scrollApply: (() => number) | null = null;
+    const cancelPress = () => {
+      window.clearTimeout(pressTimer);
+      pressTimer = undefined;
+    };
+    const stopSelectScroll = () => {
+      window.clearInterval(scrollTimer);
+      scrollTimer = undefined;
+      scrollStep = 0;
+      scrollApply = null;
+    };
+    const screenBox = () => {
+      const screen = term.element?.querySelector('.xterm-screen');
+      const pane = terminalRef.current?.parentElement;
+      if (!screen || !pane) return null;
+      const s = screen.getBoundingClientRect();
+      const cellW = s.width / term.cols;
+      const cellH = s.height / term.rows;
+      if (!(cellW > 0) || !(cellH > 0)) return null;
+      return { s, pane: pane.getBoundingClientRect(), cellW, cellH };
+    };
+    type ScreenBox = NonNullable<ReturnType<typeof screenBox>>;
+    const colAt = (box: ScreenBox, clientX: number) =>
+      Math.min(Math.max(Math.floor((clientX - box.s.left) / box.cellW), 0), term.cols - 1);
+    // The screen row under a point: below 0 above the screen, rows or more below it.
+    const rowAt = (box: ScreenBox, clientY: number) => Math.floor((clientY - box.s.top) / box.cellH);
+    const selectRange = (range: CellRange) => term.select(range.start.x, range.start.y, cellCount(range, term.cols));
+    const placeTouchUi = () => {
+      if (!touchSelecting) return;
+      const pos = term.getSelectionPosition();
+      const box = screenBox();
+      if (!pos || !box) return;
+      const top = term.buffer.active.viewportY;
+      const left = box.s.left - box.pane.left;
+      const up = box.s.top - box.pane.top;
+      // xterm's end is the column after the last cell. A handle at the
+      // pane's edge turns round, so it stays on the screen of a phone.
+      const handleAt = (which: TouchHandle, col: number, row: number): TouchHandleAt | null => {
+        if (row < top || row >= top + term.rows) return null;
+        const x = Math.round(left + col * box.cellW);
+        const flip = which === 'start' ? x - TOUCH_HANDLE_REACH < 0 : x + TOUCH_HANDLE_REACH > box.pane.width;
+        return { x, y: Math.round(up + (row - top + 1) * box.cellH), flip };
+      };
+      const start = handleAt('start', pos.start.x, pos.start.y);
+      const end = handleAt('end', pos.end.x, pos.end.y);
+      // The bar goes above the selection's first row on the screen, else
+      // under its last row and the handles, else at the top.
+      const firstRow = Math.min(Math.max(pos.start.y - top, 0), term.rows - 1);
+      const lastRow = Math.min(Math.max(pos.end.y - top, 0), term.rows - 1);
+      const above = up + firstRow * box.cellH - 8;
+      const under = up + (lastRow + 1) * box.cellH + 40;
+      const below = above < 52 && under + 48 <= box.pane.height;
+      const y = Math.round(below ? under : Math.max(above, 52));
+      const x = Math.round(start && end && pos.start.y === pos.end.y ? (start.x + end.x) / 2 : box.pane.width / 2);
+      const ui: TouchUi = { menu: { x, y, below }, copy: true, start, end };
+      const key = JSON.stringify(ui);
+      if (key === touchUiKey) return;
+      touchUiKey = key;
+      setTouchUi(ui);
+    };
+    const dismissTouch = (clear: boolean) => {
+      cancelPress();
+      stopSelectScroll();
+      pressWord = null;
+      tapFrom = null;
+      grabbed = null;
+      const was = touchSelecting;
+      touchSelecting = false;
+      touchUiKey = '';
+      setTouchUi(null);
+      if (clear && was) term.clearSelection();
+    };
+    const startTouchSelection = (range: CellRange) => {
+      touchSelecting = true;
+      selectCols = term.cols;
+      selectRange(range);
+      placeTouchUi();
+    };
+    const longPress = (clientX: number, clientY: number) => {
+      cancelPress();
+      pressFrom = null;
+      tapFrom = null;
+      const box = screenBox();
+      if (!box || pinched) return;
+      pressDone = true;
+      const row = Math.min(Math.max(rowAt(box, clientY), 0), term.rows - 1);
+      const at = { x: colAt(box, clientX), y: term.buffer.active.viewportY + row };
+      const word = wordAt(term.buffer.active, term.cols, at, term.options.wordSeparator);
+      if (word) {
+        pressWord = word;
+        startTouchSelection(word);
+        return;
+      }
+      if (touchSelecting) dismissTouch(true);
+      if (disabledRef.current) return;
+      // Above the finger.
+      touchUiKey = '';
+      setTouchUi({
+        menu: { x: clientX - box.pane.left, y: Math.max(clientY - box.pane.top, 64) - 12, below: false },
+        copy: false,
+        start: null,
+        end: null,
+      });
+    };
+    // A finger at a point moves an end of the selection (rangeFor makes the
+    // range from the cell under it). Above or below the screen, the
+    // scrollback scrolls a line at a time, and the selection follows.
+    const fingerTo = (clientX: number, clientY: number, rangeFor: (cell: Cell) => CellRange) => {
+      const apply = () => {
+        const box = screenBox();
+        if (!box) return 0;
+        const row = rowAt(box, clientY);
+        const shownRow = Math.min(Math.max(row, 0), term.rows - 1);
+        selectRange(rangeFor({ x: colAt(box, clientX), y: term.buffer.active.viewportY + shownRow }));
+        return row < 0 ? -1 : row >= term.rows ? 1 : 0;
+      };
+      scrollApply = apply;
+      const step = apply();
+      if (step === scrollStep) return;
+      window.clearInterval(scrollTimer);
+      scrollTimer = undefined;
+      scrollStep = step;
+      if (step) {
+        scrollTimer = window.setInterval(() => {
+          term.scrollLines(scrollStep);
+          scrollApply?.();
+        }, SELECT_SCROLL_MS);
+      }
+    };
+    // The finger still down after its long press: the selection runs from
+    // the word, kept whole, to the finger.
+    const moveFromWord = (clientX: number, clientY: number) => {
+      const word = pressWord;
+      if (!word) return;
+      fingerTo(clientX, clientY, (cell) => {
+        if (isBefore(cell, word.start)) return { start: cell, end: word.end };
+        if (isBefore(word.end, cell)) return { start: word.start, end: cell };
+        return word;
+      });
+    };
+    touchSelectRef.current = {
+      grab: (which) => {
+        const pos = term.getSelectionPosition();
+        if (!pos) return;
+        grabbed = which === 'start' ? { x: Math.max(pos.end.x - 1, 0), y: pos.end.y } : pos.start;
+      },
+      drag: (clientX, clientY, which) => {
+        const fixed = grabbed;
+        const box = screenBox();
+        if (!fixed || !box) return;
+        // A handle hangs under the corner of its cell: the cell is half a
+        // cell up from that corner, and toward the selection.
+        const x = clientX + ((which === 'start' ? 1 : -1) * box.cellW) / 2;
+        fingerTo(x, clientY - box.cellH / 2, (cell) => ordered(fixed, cell));
+      },
+      drop: () => {
+        grabbed = null;
+        stopSelectScroll();
+      },
+      copy: () => {
+        // The text is read at once, before the selection goes.
+        void copySelectionIfAny();
+        dismissTouch(true);
+      },
+      paste: () => {
+        dismissTouch(true);
+        void pasteClipboard(true);
+      },
+      selectAll: () => {
+        const range = allText(term.buffer.active, term.cols);
+        if (range) startTouchSelection(range);
+      },
+    };
+    // Typing (xterm drops the selection on input), a click elsewhere or a
+    // new width ends it; scrolling and new output move the handles.
+    const touchSelectionDisposable = term.onSelectionChange(() => {
+      if (!touchSelecting) return;
+      if (term.hasSelection()) placeTouchUi();
+      else dismissTouch(false);
+    });
+    const touchRenderDisposable = term.onRender(() => placeTouchUi());
+    const touchResizeDisposable = term.onResize(() => {
+      if (touchSelecting && term.cols !== selectCols) dismissTouch(true);
+    });
+    // A touch on the terminal is a tap or a swipe, which its touchend tells
+    // (onTouchEnd). Anything else outside the bar and the handles ends the
+    // selection mode; a mouse's click in the terminal clears the selection
+    // as it always does.
+    const onTouchUiPointerDown = (ev: PointerEvent) => {
+      if (!touchSelecting) return;
+      const target = ev.target instanceof Element ? ev.target : null;
+      if (target?.closest('[data-touch-ui]')) return;
+      if (ev.pointerType === 'touch' && target && terminalRef.current?.contains(target)) return;
+      dismissTouch(false);
+    };
+    window.addEventListener('pointerdown', onTouchUiPointerDown, true);
+
     // Right-click → paste. preventDefault swallows the platform context menu
     // so the user gets the terminal-style behavior they asked for. A long
-    // press on a touch screen comes as a context menu too: it only shows the
-    // Paste button there (see pasteAt).
+    // press on a touch screen comes as a context menu too: it makes the long
+    // press (see longPress), unless the timer already did.
     let lastPointerType = '';
     const onPointerDown = (ev: PointerEvent) => { lastPointerType = ev.pointerType; };
     const onContextMenu = (ev: MouseEvent) => {
       ev.preventDefault();
       const touch = IS_MOBILE || lastPointerType === 'touch' || (ev as PointerEvent).pointerType === 'touch';
-      const pane = terminalRef.current?.parentElement?.getBoundingClientRect();
-      if (touch && pane) {
-        if (disabledRef.current || pinched) return;
-        // Kept inside the pane: the button is drawn above the finger.
-        setPasteAt({
-          x: Math.min(Math.max(ev.clientX - pane.left, 64), Math.max(pane.width - 64, 64)),
-          y: Math.max(ev.clientY - pane.top, 64),
-        });
+      if (touch) {
+        const timed = pressed;
+        pressed = false;
+        if (!timed && !pinched) longPress(ev.clientX, ev.clientY);
         return;
       }
       // A program that takes the mouse got this click from xterm (mc selects a
@@ -1676,12 +1961,13 @@ const TerminalView = ({
       pinch = null;
       zoomDone();
     };
-    // xterm draws each row as an element of its own, and a new size makes
-    // them anew. A finger's moves and its lift go on to the element it landed
-    // on, also once that has left the page, and then nothing above it hears
-    // them: the pinch would stop at its first step. So during a pinch the
-    // elements under the fingers are listened to as well, for the events that
-    // no longer come through the terminal.
+    // xterm draws each row as an element of its own, and new output, a
+    // selection or a new size makes them anew. A finger's moves and its lift
+    // go on to the element it landed on, also once that has left the page,
+    // and then nothing above it hears them: a pinch would stop at its first
+    // step, a long press would never hear its lift. So the elements under the
+    // fingers are listened to as well, for the events that no longer come
+    // through the terminal.
     const fingerTargets = new Set<EventTarget>();
     const outside = (ev: Event) => !terminalRef.current?.contains(ev.target as Node);
     const onLostMove = (ev: Event) => { if (outside(ev)) onTouchMove(ev as TouchEvent); };
@@ -1705,11 +1991,30 @@ const TerminalView = ({
       fingerTargets.clear();
     };
     const onTouchStart = (ev: TouchEvent) => {
+      cancelPress();
       // A first finger: what came before is over, also if its lift was lost.
       if (ev.touches.length === 1) {
         endPinch();
         pinched = false;
         unfollowFingers();
+        followFingers(ev.touches);
+        const finger = ev.touches[0];
+        pressed = false;
+        pressDone = false;
+        pressWord = null;
+        pressFrom = { x: finger.clientX, y: finger.clientY };
+        tapFrom = touchSelecting ? pressFrom : null;
+        pressTimer = window.setTimeout(() => {
+          if (!pressFrom) return;
+          pressed = true;
+          longPress(pressFrom.x, pressFrom.y);
+        }, LONG_PRESS_MS);
+      } else {
+        // More fingers: no long press, no tap, and no drag of the selection.
+        pressFrom = null;
+        pressWord = null;
+        tapFrom = null;
+        stopSelectScroll();
       }
       if (ev.touches.length === 2) {
         pinched = true;
@@ -1728,6 +2033,19 @@ const TerminalView = ({
         : null;
     };
     const onTouchMove = (ev: TouchEvent) => {
+      const first = ev.touches[0];
+      if (pressFrom && first && Math.hypot(first.clientX - pressFrom.x, first.clientY - pressFrom.y) > TOUCH_SLOP_PX) {
+        cancelPress();
+        pressFrom = null;
+        tapFrom = null;
+      }
+      // The long press's finger moves the selection; xterm doesn't scroll.
+      if (pressWord && first && ev.touches.length === 1) {
+        if (ev.cancelable) ev.preventDefault();
+        ev.stopPropagation();
+        moveFromWord(first.clientX, first.clientY);
+        return;
+      }
       if (pinched) {
         if (ev.cancelable) ev.preventDefault();
         ev.stopPropagation();
@@ -1767,6 +2085,19 @@ const TerminalView = ({
       }
     };
     const onTouchEnd = (ev: TouchEvent) => {
+      cancelPress();
+      pressFrom = null;
+      // The lift of a long press is no tap: no click, which would clear the
+      // selection and bring up the keyboard.
+      if (pressDone && ev.type === 'touchend' && ev.cancelable) ev.preventDefault();
+      if (ev.touches.length === 0) pressDone = false;
+      if (pressWord) {
+        pressWord = null;
+        stopSelectScroll();
+      }
+      // A tap, not a swipe (a cancelled touch is the browser's scroll).
+      if (tapFrom && ev.type === 'touchend' && ev.touches.length === 0) dismissTouch(true);
+      tapFrom = null;
       swipeY = null;
       if (ev.touches.length < 2) endPinch();
       if (ev.touches.length === 0) {
@@ -2218,6 +2549,13 @@ const TerminalView = ({
       term.textarea?.removeEventListener('focus', onTextareaFocus);
       if (inputRef.current === handleData) inputRef.current = null;
       onResizeDisposable.dispose();
+      cancelPress();
+      stopSelectScroll();
+      touchSelectionDisposable.dispose();
+      touchRenderDisposable.dispose();
+      touchResizeDisposable.dispose();
+      window.removeEventListener('pointerdown', onTouchUiPointerDown, true);
+      touchSelectRef.current = null;
       // Gone before its shell was asked for: none is opened.
       window.clearTimeout(openTimer);
       window.clearTimeout(sizeTimer);
@@ -2303,21 +2641,61 @@ const TerminalView = ({
         ref={terminalRef}
         className="flex-1 min-h-0 w-full overflow-hidden select-text"
       />
-      {/* The long press's Paste button (see pasteAt). Pressing it doesn't
-          take the focus, so the soft keyboard stays up. */}
-      {pasteAt && !disabled && (
-        <button
-          type="button"
-          data-paste-button
+      {/* The long press's handles and bar (see touchUi). Pressing them
+          doesn't take the focus, so the soft keyboard stays up. A handle's
+          box is a 40 px touch area; the drop in it points at its cell's
+          corner. tabIndex makes the box a tap target for the browser's touch
+          adjustment, which otherwise gives a finger on it to the terminal
+          or a button nearby (its mousedown is cancelled: no focus). */}
+      {touchUi && (['start', 'end'] as const).map((which) => {
+        const at = touchUi[which];
+        if (!at) return null;
+        const hangsLeft = (which === 'start') !== at.flip;
+        return (
+          <div
+            key={which}
+            data-touch-ui
+            data-touch-handle={which}
+            tabIndex={-1}
+            aria-hidden="true"
+            onPointerDown={(e) => grabHandle(e, which, at)}
+            onMouseDown={(e) => e.preventDefault()}
+            style={{ left: at.x - (hangsLeft ? TOUCH_HANDLE_REACH : 40 - TOUCH_HANDLE_REACH), top: at.y - 4, touchAction: 'none' }}
+            className="absolute z-30 w-10 h-10 outline-none"
+          >
+            <span className={`absolute left-3 top-1 w-4 h-4 bg-primary rounded-full ${hangsLeft ? 'rounded-tr-none' : 'rounded-tl-none'}`} />
+          </div>
+        );
+      })}
+      {touchUi && (touchUi.copy || !disabled) && (
+        <div
+          ref={touchMenuRef}
+          data-touch-ui
+          role="toolbar"
           onPointerDown={(e) => e.preventDefault()}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => { setPasteAt(null); void pasteClipboardRef.current?.(true); }}
-          style={{ left: pasteAt.x, top: pasteAt.y }}
-          className="absolute z-30 -translate-x-1/2 -translate-y-full -mt-3 h-10 px-4 flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-white/15 shadow-xl text-[13px] font-semibold text-zinc-100 active:bg-zinc-700"
+          style={{ left: touchUi.menu.x, top: touchUi.menu.y }}
+          className={`absolute z-30 max-w-[calc(100%-16px)] flex items-center divide-x divide-white/10 rounded-lg bg-zinc-800 border border-white/15 shadow-xl overflow-hidden ${touchUi.menu.below ? '' : '-translate-y-full'}`}
         >
-          <ClipboardPaste size={15} className="text-primary shrink-0" />
-          {t('Paste')}
-        </button>
+          {touchUi.copy && (
+            <button type="button" data-touch-copy onClick={() => touchSelectRef.current?.copy()} className={TOUCH_MENU_BUTTON}>
+              <Copy size={15} className="text-primary shrink-0" />
+              {t('Copy')}
+            </button>
+          )}
+          {!disabled && (
+            <button type="button" data-paste-button onClick={() => touchSelectRef.current?.paste()} className={TOUCH_MENU_BUTTON}>
+              <ClipboardPaste size={15} className="text-primary shrink-0" />
+              {t('Paste')}
+            </button>
+          )}
+          {touchUi.copy && (
+            <button type="button" data-touch-select-all onClick={() => touchSelectRef.current?.selectAll()} className={TOUCH_MENU_BUTTON}>
+              <TextSelect size={15} className="text-primary shrink-0" />
+              {t('Select all')}
+            </button>
+          )}
+        </div>
       )}
       {/* Search chip — floats above xterm; positioned inside the outer
           flex column so it never displaces the terminal grid. Absolute
