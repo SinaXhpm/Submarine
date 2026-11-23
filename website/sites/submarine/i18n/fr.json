@@ -170,7 +170,7 @@
         {
           "id": "commands",
           "title": "Commandes et notes",
-          "text": "Gardez les commandes que vous lancez souvent, et collez-les ou exécutez-les dans un terminal."
+          "text": "Gardez les commandes que vous lancez souvent, et collez-les ou exécutez-les dans un terminal. Une commande secrète reste masquée jusqu’à ce que vous l’affichiez, et les étiquettes les gardent en ordre."
         },
         {
           "id": "phone",
@@ -197,7 +197,8 @@
             "Recherchez dans ce qu’affiche le terminal avec Ctrl+Shift+F, et dans les commandes que vous avez tapées avec Ctrl+Shift+R (Cmd+Shift sur Mac). Ctrl+F et Ctrl+R seuls restent à la disposition du shell.",
             "Faites un clic droit sur le bouton + pour ouvrir un terminal avec son propre identifiant, sur une connexion distincte : une seule fois, ou toujours pour ce serveur.",
             "Ctrl+Shift+K efface un terminal, Ctrl+Shift+W le ferme, et Ctrl+Shift+clic dessus en ouvre un autre pour le même serveur (Cmd+Shift sur Mac).",
-            "Couleurs 24 bits, {scrollback} lignes d’historique, jeux de couleurs et Nerd Fonts."
+            "Couleurs 24 bits, {scrollback} lignes d’historique, jeux de couleurs et Nerd Fonts.",
+            "Changez n’importe quel raccourci dans <em>Paramètres → Raccourcis clavier</em>, même les touches qu’utilise le shell : Ctrl+C peut copier, comme dans Windows Terminal."
           ],
           "alt": "Le Wall : trois serveurs côte à côte dans une seule fenêtre"
         },
@@ -252,7 +253,8 @@
           "points": [
             "AES-256-GCM, avec une clé calculée à partir de votre mot de passe par Argon2id. Le mot de passe n’est jamais enregistré.",
             "Déverrouillage avec Windows Hello, ou avec votre empreinte digitale sur Android. Désactivé tant que vous ne l’activez pas.",
-            "Verrouiller le profil ferme toutes les connexions, même une connexion qui est encore en train de s’établir."
+            "Verrouiller le profil ferme toutes les connexions, même une connexion qui est encore en train de s’établir.",
+            "Sur un ordinateur, la page du profil propose <strong>Une copie dans un dossier</strong> : après chaque modification, le profil chiffré est aussi enregistré dans le dossier de votre choix, par exemple dans OneDrive ou Dropbox."
           ],
           "alt": "Identifiants enregistrés et clés SSH dans le profil chiffré"
         },
@@ -263,7 +265,8 @@
           "points": [
             "Un terminal avec une barre de touches pour Ctrl, Alt, Shift, Esc, Tab, les flèches et | ~ / -. Appuyez une fois sur Ctrl ou Alt pour l’appliquer à la touche suivante, ou deux fois pour la garder activée.",
             "Le transfert de fichiers, les tunnels et l’assistant IA.",
-            "Les bureaux à distance, avec le tactile, le zoom, le presse-papiers partagé, l’indicateur de connexion et les réglages de vitesse. Un téléphone ne partage aucun fichier avec un serveur RDP."
+            "Les bureaux à distance, avec le tactile, le zoom, le presse-papiers partagé, l’indicateur de connexion et les réglages de vitesse. Un téléphone ne partage aucun fichier avec un serveur RDP.",
+            "Sur Android, un étui-clavier ou un clavier USB ou Bluetooth tape dans le terminal comme sur un ordinateur."
           ],
           "alt": "Submarine sur un téléphone Android : un terminal SSH avec barre de touches"
         }

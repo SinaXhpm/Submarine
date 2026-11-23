@@ -17,7 +17,7 @@ const KEEP = {
   submarine: ["Submarine", "SSH", "SFTP", "RDP", "VNC", "Telnet", "GitHub", "Argon2id", "AES-256-GCM", "SHA256SUMS", "MIT",
     "X-Auth-Token", "cloud_token.json", "Ctrl+Shift+F", "Ctrl+Shift+R", "DPAPI", "Windows Hello", "IronRDP", "Echoes", "TestFlight",
     "FTP", "FTPS", "TLS", "FileZilla", "Ctrl+Shift+K", "Ctrl+Shift+W", "MCP", "Claude Code", "Anthropic", "OpenAI", "OpenRouter",
-    "Ollama", "LM Studio", "submarine-sync-server",
+    "Ollama", "LM Studio", "submarine-sync-server", "Ctrl+C", "Windows Terminal", "OneDrive", "Dropbox",
     // the AI screens are in English only for now, so the page names their levels and tabs as the app shows them
     "<em>Suggest only</em>", "<em>Ask</em>", "<em>Full access</em>", "<em>Activity</em>"],
   echoes: ["Echoes", "App Store", "GitHub", "MIT", "Submarine", "cURL", "Doctor", "String Lab", "TLS Inspector", "Telegram", "Cloudflare",
@@ -50,6 +50,8 @@ const APP_LABELS = {
     // Settings is translated in the app; the AI sections in it are in English only for now
     ["Settings → AI Assistant", (d) => `${d.Settings} → AI Assistant`],
     ["Settings → AI agents", (d) => `${d.Settings} → AI agents`],
+    ["Settings → Keyboard shortcuts", (d) => `${d.Settings} → ${d["Keyboard shortcuts"]}`],
+    ["A copy in a folder", (d) => d["A copy in a folder"]],
     ["Open in: Submarine's tab", (d) => d["Open in"]],
     ["Open in: Submarine's tab", (d) => d["Submarine's tab (experimental)"].replace(/\s*[（(][^（()）]*[)）]\s*$/, "")],
     ...["Good", "Fair", "Weak", "Not answering"].map((k) => [k, (d) => d[k], /^home\.remote\.points\[0\]\.text$/]),
