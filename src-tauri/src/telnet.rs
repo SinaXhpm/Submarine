@@ -394,12 +394,14 @@ pub async fn connect_through(route: &[russh::client::Handle<ClientHandler>], hos
 /// writer are separate tasks, so the reader is drained whatever the writer
 /// waits on (a channel through an SSH server stalls its whole connection
 /// otherwise; see `ssh_manager::pty_pump`).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pump(
     app: AppHandle,
     session_id: String,
     terminal_id: String,
     page: Arc<PageDrawn>,
     conn: Conn,
+    mut log: Option<crate::session_log::SessionLog>,
     mut rx: mpsc::Receiver<TerminalCommand>,
     mut resize_rx: watch::Receiver<PtySize>,
 ) {
@@ -487,6 +489,10 @@ pub async fn run_pump(
                     if let Ok(mut t) = telnet.lock() {
                         t.receive(&buf[..n], &mut text, &mut reply);
                     }
+                    // The session log gets the text, before the filter (session_log.rs).
+                    if let Some(log) = log.as_mut() {
+                        log.write(&text);
+                    }
                     let size = *sizes.borrow();
                     limiter.set_size(size.cols, size.rows);
                     limiter.filter(&text, &mut out);
@@ -497,7 +503,12 @@ pub async fn run_pump(
                     }
                 }
             },
-            Some(echo) = echo_rx.recv() => out.extend_from_slice(&echo),
+            Some(echo) = echo_rx.recv() => {
+                if let Some(log) = log.as_mut() {
+                    log.write(&echo);
+                }
+                out.extend_from_slice(&echo);
+            }
             _ = &mut flush_timer => {
                 let next = if flow.send(&mut out, &page, &mut flush) { park() } else { flow.wait_until() };
                 flush_timer.as_mut().reset(next);

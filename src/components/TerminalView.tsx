@@ -17,6 +17,7 @@ import { TERMINAL_CLEAR, TERMINAL_PASTE, clearTerminal, withoutPasteControls, ty
 import { TERMINAL_READ, TERMINAL_READ_REPLY, type TerminalRead, type TerminalReadReply } from '../util/terminalRead';
 import { READABLE_CONTRAST, readBoldBright, readMinContrast, readScheme } from '../util/terminalTheme';
 import { readUseLocalShell } from '../util/terminalShell';
+import { sessionLogRequest } from '../util/sessionLog';
 import { holdTerminalInput, writeTerminal } from '../util/terminalWrite';
 import { readUseSshAgent } from '../util/sshAgent';
 import { readSendKeepalives } from '../util/sessionKeep';
@@ -698,6 +699,7 @@ const TerminalView = ({
         terminalId,
         cols: term.cols || 80,
         rows: term.rows || 24,
+        sessionLog: logRequest(),
       }).then(syncSize, e => failed(e, t('Reconnect failed: {error}', { error: String(e) })));
     } else if (ce) {
       invoke('open_container_terminal', {
@@ -707,6 +709,7 @@ const TerminalView = ({
         cols: term.cols || 80,
         rows: term.rows || 24,
         useSudo: ce.useSudo,
+        sessionLog: logRequest(),
       }).then(syncSize, e => failed(e, t('Reconnect into container failed: {error}', { error: String(e) })));
     } else {
       // A terminal with a login of its own logs in again first.
@@ -720,6 +723,7 @@ const TerminalView = ({
             cols: term.cols || 80,
             rows: term.rows || 24,
             useLocalShell: readUseLocalShell(),
+            sessionLog: logRequest(),
           }).then(() => true);
         })
         .then((opened) => { if (opened) syncSize(); else releaseInput(false); },
@@ -746,6 +750,24 @@ const TerminalView = ({
     return () => { off.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ownConn, ownLogin]);
+  // The session log, if Settings or the server's choice has one
+  // (util/sessionLog): read at each open, a reconnect included.
+  const logRequest = () => sessionLogRequest({ uuid: serverUuid, id: serverId, name: serverName });
+  // Where it goes, or why it couldn't start: said once in the terminal, the
+  // way the app's other notes there are. The terminal opens either way.
+  useEffect(() => {
+    if (attachOnly) return;
+    const off = listen(`terminal-log-${terminalId}`, (e: any) => {
+      const p = e.payload || {};
+      const note = p.error
+        ? "\r\n\x1b[33m" + t("── session log: {error} ──", { error: String(p.error) }) + "\x1b[0m"
+        : "\x1b[2m" + t("── logging this session to {path} ──", { path: String(p.path) }) + "\x1b[0m";
+      xtermRef.current?.write(note + "\r\n");
+    });
+    return () => { off.then((f) => f()); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalId, attachOnly]);
+
   // The shell ended by itself (`exit`, Ctrl+D, its program quit): keys go
   // nowhere from here on, while everything else on screen still looks alive.
   // Not said for a connection that dropped: the banner and the badge do that.
@@ -1167,6 +1189,7 @@ const TerminalView = ({
             terminalId,
             cols: term.cols || 80,
             rows: term.rows || 24,
+            sessionLog: logRequest(),
           }).then(syncSize, e => {
             releaseInput(false);
             term.writeln(`\x1b[31m${t('Failed to open terminal: {error}', { error: String(e) })}\x1b[0m`);
@@ -1179,6 +1202,7 @@ const TerminalView = ({
             cols: term.cols || 80,
             rows: term.rows || 24,
             useSudo: containerExec.useSudo,
+            sessionLog: logRequest(),
           }).then(syncSize, e => {
             releaseInput(false);
             term.writeln(`\x1b[31m${t('Failed to attach to container: {error}', { error: String(e) })}\x1b[0m`);
@@ -1194,6 +1218,7 @@ const TerminalView = ({
               cols: term.cols || 80,
               rows: term.rows || 24,
               useLocalShell: readUseLocalShell(),
+              sessionLog: logRequest(),
             }).then(() => true);
           }).then((opened) => {
             if (!opened) {
