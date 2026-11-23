@@ -1891,13 +1891,17 @@ const TerminalView = ({
     // Right-click → paste. preventDefault swallows the platform context menu
     // so the user gets the terminal-style behavior they asked for. A long
     // press on a touch screen comes as a context menu too: it makes the long
-    // press (see longPress), unless the timer already did.
+    // press (see longPress), unless the timer already did. That one stops
+    // here, before xterm's own handler: it moves xterm's text field under the
+    // finger and focuses it, which brought a phone's keyboard up over the
+    // selection.
     let lastPointerType = '';
     const onPointerDown = (ev: PointerEvent) => { lastPointerType = ev.pointerType; };
     const onContextMenu = (ev: MouseEvent) => {
       ev.preventDefault();
       const touch = IS_MOBILE || lastPointerType === 'touch' || (ev as PointerEvent).pointerType === 'touch';
       if (touch) {
+        ev.stopPropagation();
         const timed = pressed;
         pressed = false;
         if (!timed && !pinched) longPress(ev.clientX, ev.clientY);
@@ -2279,7 +2283,7 @@ const TerminalView = ({
     document.addEventListener('mouseup', onDocMouseUp, true);
     window.addEventListener('blur', onWindowBlur);
     terminalRef.current.addEventListener('pointerdown', onPointerDown, true);
-    terminalRef.current.addEventListener('contextmenu', onContextMenu);
+    terminalRef.current.addEventListener('contextmenu', onContextMenu, true);
     terminalRef.current.addEventListener('paste', onPasteEvent, true);
     // Before xterm's own touch handlers too; touchmove can't be passive, it
     // keeps the swipe from scrolling the page.
@@ -2564,7 +2568,7 @@ const TerminalView = ({
         container.removeEventListener('mousedown', onNewTerminalClick, true);
         container.removeEventListener('mousedown', onMouseDown, true);
         container.removeEventListener('pointerdown', onPointerDown, true);
-        container.removeEventListener('contextmenu', onContextMenu);
+        container.removeEventListener('contextmenu', onContextMenu, true);
         container.removeEventListener('paste', onPasteEvent, true);
         container.removeEventListener('touchstart', onTouchStart, true);
         container.removeEventListener('touchmove', onTouchMove, true);
