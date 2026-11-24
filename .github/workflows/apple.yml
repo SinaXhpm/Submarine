@@ -73,22 +73,24 @@ jobs:
   # ---------------------------------------------------------------------------
   # iOS
   # ---------------------------------------------------------------------------
+  # The jobs that build or sign for Apple run on GitHub's xcode-27 machines:
+  # from April 2027 App Store Connect takes only uploads built with Xcode 27
+  # (the iOS 27 and macOS 27 SDKs) or later, and macos-latest has Xcode 26 only.
   ios-build:
     needs: meta
-    runs-on: macos-latest
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      # App Store Connect takes only uploads built with Xcode 26 or later
-      # (since 2026-04-28).
-      - name: Use Xcode 26
+      # The newest Xcode 27 that is not a beta.
+      - name: Use Xcode 27
         shell: bash
         run: |
-          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          XC="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V | tail -1)"
           if [ -z "$XC" ]; then
-            echo "::error::No Xcode 26 on this runner"; ls -d /Applications/Xcode*.app; exit 1
+            echo "::error::No Xcode 27 on this runner"; ls -d /Applications/Xcode*.app; exit 1
           fi
           sudo xcode-select -s "$XC"
           xcodebuild -version
@@ -189,7 +191,7 @@ jobs:
   # Signs the iOS app for the App Store and uploads it. Runs Apple's tools only.
   ios-sign:
     needs: [meta, ios-build]
-    runs-on: macos-latest
+    runs-on: xcode-27
     steps:
       - name: Download the unsigned app
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -197,11 +199,11 @@ jobs:
           name: ios-unsigned
           path: unsigned
 
-      - name: Use Xcode 26
+      - name: Use Xcode 27
         shell: bash
         run: |
-          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
-          [ -n "$XC" ] || { echo "::error::No Xcode 26 on this runner"; exit 1; }
+          XC="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "::error::No Xcode 27 on this runner"; exit 1; }
           sudo xcode-select -s "$XC"
 
       - name: Sign
@@ -283,7 +285,7 @@ jobs:
   # ---------------------------------------------------------------------------
   mac-build:
     needs: meta
-    runs-on: macos-latest
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -296,11 +298,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Use Xcode 26
+      - name: Use Xcode 27
         shell: bash
         run: |
-          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
-          [ -n "$XC" ] || { echo "::error::No Xcode 26 on this runner"; exit 1; }
+          XC="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "::error::No Xcode 27 on this runner"; exit 1; }
           sudo xcode-select -s "$XC"
 
       - name: Stamp version
@@ -546,7 +548,7 @@ jobs:
   # uploaded to App Store Connect.
   mac-appstore-sign:
     needs: [meta, mac-build]
-    runs-on: macos-latest
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -559,11 +561,11 @@ jobs:
           name: mac-unsigned-appstore
           path: unsigned
 
-      - name: Use Xcode 26
+      - name: Use Xcode 27
         shell: bash
         run: |
-          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
-          [ -n "$XC" ] || { echo "::error::No Xcode 26 on this runner"; exit 1; }
+          XC="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "::error::No Xcode 27 on this runner"; exit 1; }
           sudo xcode-select -s "$XC"
 
       - name: Sign and package
