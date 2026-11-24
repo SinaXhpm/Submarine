@@ -739,6 +739,7 @@ fn container_terminal_command(container: &str, use_sudo: bool) -> String {
 // the regular shell terminal uses, so xterm.js on the frontend works
 // without any branch — just a different exec target.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn open_container_terminal(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
@@ -748,6 +749,7 @@ pub async fn open_container_terminal(
     cols: u32,
     rows: u32,
     use_sudo: bool,
+    session_log: Option<crate::session_log::Request>,
 ) -> Result<(), String> {
     use crate::ssh_manager::TerminalCommand;
 
@@ -792,10 +794,12 @@ pub async fn open_container_terminal(
     // Same pump as the SSH terminal (see open_terminal): coalesced output
     // (~8ms / size cap, base64 batches) and a split read/write channel whose
     // read side is always drained — required by russh's channel backpressure.
+    let log = crate::start_session_log(&app, &terminal_id, session_log);
     tauri::async_runtime::spawn(crate::ssh_manager::run_pty_pump(
         app.clone(),
         terminal_id.clone(),
         channel,
+        log,
         rx,
         resize_rx,
     ));

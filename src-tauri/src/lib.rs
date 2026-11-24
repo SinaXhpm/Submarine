@@ -51,6 +51,7 @@ mod quick_unlock;
 mod rdp_client;
 mod rdp_share;
 mod term_filter;
+mod session_log;
 mod vault_backup;
 mod folder_copy;
 mod ai;
@@ -18656,9 +18657,11 @@ async fn telnet_open_terminal(
     terminal_id: String,
     cols: u32,
     rows: u32,
+    session_log: Option<session_log::Request>,
 ) -> Result<(), String> {
     use crate::ssh_manager::{PtySize, TerminalCommand};
     let conn = telnet_pending.lock().await.remove(&session_id).ok_or("Not connected")?;
+    let log = start_session_log(&app, &terminal_id, session_log);
     let (tx, rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
     let (resize_tx, resize_rx) = tokio::sync::watch::channel(PtySize { cols, rows });
     // What the page has drawn: what it hasn't stays bounded (ssh_manager::Outflow).
@@ -18667,7 +18670,7 @@ async fn telnet_open_terminal(
     let page = ssh_manager::page_start(&terminal_id);
     state.terminal_txs.lock().await.insert(terminal_id.clone(), tx);
     state.resize_txs.lock().await.insert(terminal_id.clone(), resize_tx);
-    tauri::async_runtime::spawn(telnet::run_pump(app, session_id, terminal_id, page, conn, rx, resize_rx));
+    tauri::async_runtime::spawn(telnet::run_pump(app, session_id, terminal_id, page, conn, log, rx, resize_rx));
     Ok(())
 }
 
@@ -19264,7 +19267,8 @@ async fn server_runs_login_shell(session_arc: &SessionHandleArc, shell: &str) ->
 }
 
 #[tauri::command]
-async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>, session_id: String, terminal_id: String, cols: u32, rows: u32, use_local_shell: bool) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>, session_id: String, terminal_id: String, cols: u32, rows: u32, use_local_shell: bool, session_log: Option<session_log::Request>) -> Result<(), String> {
     use std::sync::Arc;
     use crate::ssh_manager::TerminalCommand;
 
@@ -19312,15 +19316,62 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
     // always-draining read/write pump (required by russh's channel
     // backpressure) live in ssh_manager::run_pty_pump — shared with the
     // docker exec terminal.
+    let log = start_session_log(&app, &terminal_id, session_log);
     tauri::async_runtime::spawn(crate::ssh_manager::run_pty_pump(
         app.clone(),
         terminal_id.clone(),
         channel,
+        log,
         rx,
         resize_rx,
     ));
 
     Ok(())
+}
+
+/// Starts a terminal's session log (session_log.rs) as the page asked: nothing
+/// for `None` or mode "off". `&H` and `&P` are the server's host and port in
+/// the profile. Whether the file opened, or why not, goes to the page as
+/// `terminal-log-{id}` (`path` or `error`); the terminal opens either way.
+pub(crate) fn start_session_log(app: &tauri::AppHandle, terminal_id: &str, req: Option<session_log::Request>) -> Option<session_log::SessionLog> {
+    use tauri::Emitter;
+    let req = req?;
+    let (host, port) = if req.server_id > 0 { server_host_port(&app.state::<DbState>(), req.server_id) } else { (String::new(), 0) };
+    let topic = format!("terminal-log-{}", terminal_id);
+    match session_log::target(&req, &host, port, chrono::Local::now()) {
+        Ok(None) => None,
+        Err(error) => {
+            let _ = app.emit(&topic, json!({ "error": error }));
+            None
+        }
+        Ok(Some(target)) => {
+            let app = app.clone();
+            Some(session_log::SessionLog::start(target, move |event| {
+                let payload = match event {
+                    session_log::Event::Opened(path) => json!({ "path": path.display().to_string() }),
+                    session_log::Event::Failed(error) => json!({ "error": error }),
+                };
+                let _ = app.emit(&topic, payload);
+            }))
+        }
+    }
+}
+
+/// A server's host and port in the open profile; empty and 0 if it isn't there.
+fn server_host_port(db: &DbState, server_id: i32) -> (String, u16) {
+    let Ok(guard) = db.conn.lock() else { return (String::new(), 0) };
+    let Some(conn) = guard.as_ref() else { return (String::new(), 0) };
+    conn.query_row("SELECT host, port FROM servers WHERE id = ?1", rusqlite::params![server_id], |row| {
+        Ok((row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get::<_, Option<i64>>(1)?.unwrap_or(0)))
+    })
+    .map(|(host, port)| (host, u16::try_from(port).unwrap_or(0)))
+    .unwrap_or((String::new(), 0))
+}
+
+/// The folder session logs go to when Settings names none (session_log.rs).
+#[tauri::command]
+fn session_log_default_folder() -> Option<String> {
+    session_log::default_folder().map(|p| p.display().to_string())
 }
 
 #[tauri::command]
@@ -26974,7 +27025,7 @@ pub fn run() {
             telnet_connect, telnet_open_terminal, ftp_connect, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
-            open_terminal, local_shell, write_terminal_data, type_saved_password, terminal_drawn, resize_terminal, close_terminal,
+            open_terminal, session_log_default_folder, local_shell, write_terminal_data, type_saved_password, terminal_drawn, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,
             docker::ssh_docker_container_action,

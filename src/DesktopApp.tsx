@@ -34,6 +34,7 @@ import {
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { SHOW_TERMINAL_TITLES_KEY, readShowTerminalTitles } from "./util/terminalTitle";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
+import { type LogChoice, forgetServerLogChoice, readServerLogChoice, writeServerLogChoice } from "./util/sessionLog";
 import { AUTO_RECONNECT_KEY, DEFAULT_SESSION_KEEP, SEND_KEEPALIVES_KEY, forgetSessionKeep, readAutoReconnectDefault, readSendKeepalivesDefault, readSessionKeep, writeSessionKeep } from "./util/sessionKeep";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
 import { UPDATE_BETA_KEY, readUpdateBeta } from "./util/updateChannel";
@@ -417,6 +418,8 @@ function DesktopApp() {
     rdpOptions: { ...DEFAULT_RDP_OPTIONS },
     // An SSH server's keepalives and reconnecting on this device (util/sessionKeep).
     sessionKeep: { ...DEFAULT_SESSION_KEEP },
+    // An SSH or telnet server's session log on this device (util/sessionLog).
+    logChoice: "default",
     // A VNC server's speed and quality on this device (util/vncOptions).
     vncOptions: { ...DEFAULT_VNC_OPTIONS },
     name: "", host: "", port: 22, username: "", password: "",
@@ -999,6 +1002,7 @@ function DesktopApp() {
     if (s.uuid) {
       forgetRdpOptions(s.uuid);
       forgetSessionKeep(s.uuid);
+      forgetServerLogChoice(s.uuid);
       forgetVncOptions(s.uuid);
     }
   };
@@ -1495,6 +1499,7 @@ function DesktopApp() {
       protocol: serverProtocol(server.protocol),
       rdpOptions: readRdpOptions(server.uuid),
       sessionKeep: readSessionKeep(server.uuid),
+      logChoice: readServerLogChoice(server.uuid),
       vncOptions: readVncOptions(server.uuid),
       name: server.name || "",
       host: server.host || "",
@@ -3810,6 +3815,15 @@ function DesktopApp() {
                 if (uuid) writeSessionKeep(uuid, newNode.sessionKeep || DEFAULT_SESSION_KEEP);
               } catch (e) {
                 addLog(`SAVE_SESSION_KEEP_FAILED: ${e}`, "error");
+              }
+            }
+            // An SSH or telnet server's session log: the same, this device's own.
+            if (!isRdp && !isVnc && !ftpServer) {
+              try {
+                const uuid = (await invoke<any[]>("get_servers")).find((s) => s.id === savedId)?.uuid;
+                if (uuid) writeServerLogChoice(uuid, (newNode.logChoice || "default") as LogChoice);
+              } catch (e) {
+                addLog(`SAVE_SESSION_LOG_FAILED: ${e}`, "error");
               }
             }
             // A VNC server's speed and quality: the same, this device's own.

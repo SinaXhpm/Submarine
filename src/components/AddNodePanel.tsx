@@ -1315,6 +1315,27 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </div>
             )}
 
+            {/* This device's session log choice for this server, see util/sessionLog. */}
+            {(isSsh || isTelnet) && !IS_MOBILE && (
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Session log")}</label>
+                  <select
+                    aria-label={t("Session log")}
+                    className="h-8 bg-[#1a1a1e] rounded-lg px-2 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50"
+                    value={newNode.logChoice || "default"}
+                    onChange={(e) => setNewNode({ ...newNode, logChoice: e.target.value })}
+                  >
+                    <option value="default" className="bg-[#1a1a1e]">{t("As in Settings")}</option>
+                    <option value="off" className="bg-[#1a1a1e]">{t("Off")}</option>
+                    <option value="text" className="bg-[#1a1a1e]">{t("Text only")}</option>
+                    <option value="all" className="bg-[#1a1a1e]">{t("All output")}</option>
+                  </select>
+                </div>
+                <p className="text-[10px] text-zinc-500 ml-1">{t("Kept on this device only. Where logs go is in Settings.")}</p>
+              </div>
+            )}
+
             {/* Per-node notes — free-form, plain text. Lives on the server
                 row (servers.notes column) and never crosses the network. The
                 primary use case is small runbooks: which user owns root,

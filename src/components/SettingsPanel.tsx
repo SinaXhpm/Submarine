@@ -25,6 +25,9 @@ import {
 import { IS_ANDROID, IS_MOBILE } from "../util/platform";
 import { LANGUAGES, languageSetting, setLanguageSetting, systemLanguage, tk, tx, useLanguage, useT } from "../i18n";
 import { translationIssueUrl } from "../util/links";
+import {
+  DEFAULT_LOG_FILE_NAME, LogMode, SessionLogDefaults, readSessionLogDefaults, writeSessionLogDefaults,
+} from "../util/sessionLog";
 
 // Where this install keeps its data (see src-tauri/src/portable.rs). `portable`
 // means a `submarine-data` folder next to the executable is in use; `warning`
@@ -68,6 +71,122 @@ function DefaultShellSetting({ settings, setSettings }: any) {
           <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings.useLocalShell ? 'left-[22px]' : 'left-0.5'}`} />
         </button>
       </div>
+    </div>
+  );
+}
+
+// "Session logs" (util/sessionLog, src-tauri/src/session_log.rs, #397): this
+// device's default. Off by default. Not on a phone or tablet.
+function SessionLogSettings() {
+  const t = useT();
+  const [log, setLog] = useState<SessionLogDefaults>(readSessionLogDefaults);
+  const [defaultFolder, setDefaultFolder] = useState("");
+  const [pickError, setPickError] = useState("");
+  useEffect(() => {
+    invoke<string | null>("session_log_default_folder").then((f) => setDefaultFolder(f || ""), () => {});
+  }, []);
+  const change = (next: Partial<SessionLogDefaults>) => {
+    const merged = { ...log, ...next };
+    setLog(merged);
+    writeSessionLogDefaults(merged);
+  };
+  const choose = async () => {
+    setPickError("");
+    try {
+      const folder = await invoke<string | null>("pick_local_directory");
+      if (folder) change({ folder });
+    } catch (e) {
+      setPickError(t("Couldn't open the folder picker: {error}", { error: String(e) }));
+    }
+  };
+  const field = "flex-1 min-w-0 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-primary/50";
+  const off = log.mode === "off";
+  return (
+    <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-zinc-100">{t("Session logs")}</div>
+          <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+            {t("Write a terminal's output to a file while the session runs, so a dropped connection keeps what came before it. For SSH, container and telnet terminals. A server can have its own choice in its details.")}
+          </p>
+        </div>
+        <select
+          aria-label={t("Session logs")}
+          value={log.mode}
+          onChange={(e) => change({ mode: e.target.value as LogMode })}
+          className="shrink-0 h-9 bg-[#1a1a1e] rounded-lg px-2 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50"
+        >
+          <option value="off" className="bg-[#1a1a1e]">{t("Off")}</option>
+          <option value="text" className="bg-[#1a1a1e]">{t("Text only")}</option>
+          <option value="all" className="bg-[#1a1a1e]">{t("All output")}</option>
+        </select>
+      </div>
+      {!off && (
+        <p className="text-[12px] text-zinc-500 leading-relaxed">
+          {log.mode === "text"
+            ? t("Text only: what you'd read on the screen, without colours and other escape codes. Easy to read, search and paste into a ticket.")
+            : t("All output: everything the server sent, escape codes included. Shown with cat in a terminal, it looks as it did; in a text editor it's hard to read.")}
+        </p>
+      )}
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-bold text-zinc-400" htmlFor="session-log-folder">{t("Folder")}</label>
+        <div className="flex items-center gap-2">
+          <input
+            id="session-log-folder"
+            type="text"
+            value={log.folder}
+            placeholder={defaultFolder}
+            onChange={(e) => change({ folder: e.target.value })}
+            spellCheck={false}
+            autoCapitalize="none"
+            autoCorrect="off"
+            className={field}
+          />
+          <button
+            type="button"
+            onClick={choose}
+            className="shrink-0 px-3 py-2 rounded-lg text-[12px] font-semibold text-zinc-300 bg-white/5 border border-white/10 hover:bg-white/10 transition-colors"
+          >
+            {t("Choose…")}
+          </button>
+        </div>
+        {pickError && <p className="text-[11px] text-rose-400">{pickError}</p>}
+      </div>
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-bold text-zinc-400" htmlFor="session-log-file">{t("File name")}</label>
+        <input
+          id="session-log-file"
+          type="text"
+          value={log.fileName}
+          placeholder={DEFAULT_LOG_FILE_NAME}
+          onChange={(e) => change({ fileName: e.target.value })}
+          spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
+          className={"w-full " + field}
+        />
+        <p className="text-[11px] text-zinc-500 leading-relaxed">
+          {t("&S is the server's name, &H its host and &P its port; &Y, &M and &D the date and &T the time the session opened. A / makes a folder.")}
+        </p>
+      </div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold text-zinc-200">{t("Add to a log that exists")}</div>
+          <p className="text-[12px] text-zinc-500 leading-relaxed mt-0.5">{t("Off, a log with the same name is started again.")}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={log.append}
+          aria-label={t("Add to a log that exists")}
+          onClick={() => change({ append: !log.append })}
+          className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${log.append ? 'bg-primary' : 'bg-zinc-700'}`}
+        >
+          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${log.append ? 'left-[22px]' : 'left-0.5'}`} />
+        </button>
+      </div>
+      <p className="text-[11px] text-zinc-500 leading-relaxed">
+        {t("Kept on this device only. A change applies to terminals opened after it.")}
+      </p>
     </div>
   );
 }
@@ -993,6 +1112,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
           <ProgramTitlesSetting settings={settings} setSettings={setSettings} />
 
           <DefaultShellSetting settings={settings} setSettings={setSettings} />
+
+          {!IS_MOBILE && <SessionLogSettings />}
           
           <ShellConfigSyncSettings servers={servers} />
         </section>
