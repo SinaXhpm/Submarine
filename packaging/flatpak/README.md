@@ -36,7 +36,7 @@ flatpak run com.sinaxhpm.Submarine
    ```yaml
    - type: git
      url: https://github.com/SinaXhpm/Submarine.git
-     tag: v0.5.1
+     tag: v0.5.2
      commit: <the tag's commit>
    ```
 
