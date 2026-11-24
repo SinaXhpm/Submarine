@@ -74,8 +74,9 @@ jobs:
   # iOS
   # ---------------------------------------------------------------------------
   # The jobs that build or sign for Apple run on GitHub's xcode-27 machines:
-  # from April 2027 App Store Connect takes only uploads built with Xcode 27
-  # (the iOS 27 and macOS 27 SDKs) or later, and macos-latest has Xcode 26 only.
+  # from April 2027 App Store Connect takes iOS uploads only when built with
+  # Xcode 27 (the iOS 27 SDK) or later, and macos-latest has Xcode 26 only.
+  # The Mac builds use the same Xcode.
   ios-build:
     needs: meta
     runs-on: xcode-27
