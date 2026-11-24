@@ -498,21 +498,23 @@ Designed and built by [Sina](https://sinaxhpm.com) in collaboration with [Claude
 
 MIT — see [LICENSE](LICENSE).
 
-## Also by the author: Echoes — free network & developer toolkit
+## Also by the author
 
-<a href="https://github.com/SinaXhpm/Echoes"><img src="https://raw.githubusercontent.com/SinaXhpm/Echoes/master/Echoes.Android/Resources/mipmap-xhdpi/icon.png" alt="Echoes — free, open-source network toolkit and developer tools for Windows, macOS, Linux and Android" width="64" align="left" /></a>
+### Echoes — 23 network and developer tools in one app
 
-**[Echoes](https://github.com/SinaXhpm/Echoes)** is a [free, open-source network toolkit for Windows, macOS, Linux and Android](https://github.com/SinaXhpm/Echoes) with **20 network and developer tools in one app**: the things you would run one by one (ping, traceroute, nmap, curl, dig, whois, PuTTY, netcat, a speed-test site, the Cloudflare dashboard) behind one simple window. No account, no ads, no telemetry. MIT licensed.
+<a href="https://echoes.sinaxhpm.com"><img src="docs/also/echoes.webp" width="720" alt="Echoes: the Doctor checking a site step by step (DNS, connection, TLS, HTTPS), next to the list of tools" /></a>
 
-<br clear="left" />
+A Doctor that says in one sentence why a site won't open, plus ping, traceroute, a speed test, a port scanner, DNS, cURL, SSH and file sharing with any browser. Free and open source for Windows, macOS, Linux, Android, iPhone and iPad.
 
-- **Diagnose** — a **connection doctor** that says in one sentence why a site won't open (DNS tampering, SNI filtering, a blocked IP, a filter page, or down for everyone), **ping, TCP ping, traceroute and MTR** (loss per hop, no admin rights needed), an **internet speed test** with a bufferbloat grade, a **TCP/UDP port scanner** with service and version detection (an nmap alternative), **check host** from servers around the world, and **network info** with a Wi-Fi analyzer, ARP neighbours, open ports and the routing table
-- **DNS and web** — **DNS lookup** over UDP, DNS over HTTPS and DNS over TLS with resolver comparison and an email (SPF, DKIM, DMARC) check, **WHOIS / RDAP**, a **cURL / HTTP client** that imports curl commands (a Postman alternative), an **SSL/TLS certificate inspector**, **IP and GeoIP lookup**, a **Cloudflare manager** with dynamic DNS, and a **Telegram Bot API tester**
-- **Servers and connections** — an **SSH client** (terminal, SFTP, port forwarding, server health), a **TCP / UDP / WebSocket tool** (a netcat alternative), **LAN file sharing and chat** in any browser with a QR code plus a webhook catcher, a **SOCKS5 + HTTP proxy server** with a **proxy checker**, and an **uptime monitor** with Telegram alerts and certificate and domain expiry warnings
-- **Workspace** — **String Lab** (Base64, hashes, JWT, JSON ↔ YAML / CSV, regex, subnet / CIDR calculator, cron, UUID and password generators), **encrypted notes**, and **history with one encrypted backup file**
-- **Built with** C# · .NET · Avalonia UI · Native AOT — self-contained native apps for Windows, macOS (Intel and Apple Silicon), Linux and Android 6.0+, with nothing extra to install, dark and light themes, and secrets encrypted on your device
+[Website](https://echoes.sinaxhpm.com) · [GitHub](https://github.com/SinaXhpm/Echoes) · [Download](https://github.com/SinaXhpm/Echoes/releases/latest)
 
-[Echoes on GitHub](https://github.com/SinaXhpm/Echoes) · [Download Echoes for Windows, macOS, Linux and Android](https://github.com/SinaXhpm/Echoes/releases) · [More projects by Sina Xhpm](https://sinaxhpm.com)
+### Captun — a smart hotspot
+
+<a href="https://captun.sinaxhpm.com"><img src="docs/also/captun.webp" width="720" alt="Captun: the helm that starts sharing over a Wi-Fi hotspot or USB, and the way out for connected devices" /></a>
+
+Share your computer's internet, VPN or proxy with phones, TVs and consoles over Wi-Fi, a cable or USB, and decide where each device's traffic goes. For Windows and Linux; in development, no release yet.
+
+[Website](https://captun.sinaxhpm.com) · [Source code](https://github.com/SinaXhpm/captun)
 
 ---
 
