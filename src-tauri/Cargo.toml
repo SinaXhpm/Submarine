@@ -221,6 +221,8 @@ gdk = "0.18"
 # goes once it has read it (rdp.rs, launch_rdp_app). And the agent
 # gateway's pipe (gateway/ipc.rs): an access list for this user alone, the
 # process on the pipe's other end, its program file and what started it.
+# And the clipboard as a list of files, for the built-in RDP client's file
+# copy (file_clipboard.rs).
 # ---------------------------------------------------------------------------
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -233,7 +235,9 @@ windows = { version = "0.62", features = [
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_System_TpmBaseServices",
@@ -246,6 +250,19 @@ windows = { version = "0.62", features = [
 # front of it. A phone has none.
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-rdpdr-native = { path = "vendor/ironrdp-rdpdr-native" }
+
+# The clipboard as a list of files on macOS (file_clipboard.rs), through
+# AppKit's pasteboard: the bindings Tauri already builds on (same versions,
+# nothing new to download), with only the parts used here.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
+
+# The room left on a disk, before the server's copied files come over
+# (rdp_files.rs).
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+libc = "0.2"
 
 # iOS: winscard (through IronRDP's sspi) turns on flate2's C zlib, and Xcode
 # links the app's Rust code as a static library without being told to link

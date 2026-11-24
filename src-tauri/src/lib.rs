@@ -49,6 +49,8 @@ mod known_hosts;
 mod rdp;
 mod quick_unlock;
 mod rdp_client;
+mod rdp_files;
+mod file_clipboard;
 mod rdp_share;
 mod term_filter;
 mod vault_backup;
@@ -17721,6 +17723,10 @@ async fn rdp_builtin_open(
         if keyboard_layout != 0 {
             log(&format!("Keyboard layout told to the server: {keyboard_layout:08X}, this computer's default."), "info");
         }
+        // With the clipboard shared, files go through it too (on a computer:
+        // a phone's clipboard holds none); the server's come to a folder of
+        // this run's own.
+        let files_dir = session_rdpclip_dir(&session_id, generation).ok().filter(|_| cfg!(desktop) && clipboard == Some(true));
         let login = rdp_client::Login {
             host: host.clone(),
             username: login_user,
@@ -17731,6 +17737,7 @@ async fn rdp_builtin_open(
             allow_no_nla: allow_no_nla.unwrap_or(false),
             graphics,
             clipboard: clipboard.unwrap_or(false),
+            files_dir: files_dir.clone(),
             drive,
             keyboard_layout,
         };
@@ -17792,6 +17799,32 @@ async fn rdp_builtin_open(
                 }
             }
         };
+        // What becomes of the files the user copied on the server, for the
+        // tab. The ones here wait in rdp_files.rs for the tab to put them on
+        // this computer's clipboard (`rdp_builtin_files_to_clipboard`).
+        let remote_files = {
+            let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
+            move |note: rdp_files::Note| {
+                if !attempt.is_current_now() {
+                    return;
+                }
+                let said = match note {
+                    rdp_files::Note::Copied { set, files, bytes, offered } => {
+                        serde_json::json!({"kind": "copied", "set": set, "files": files, "bytes": bytes, "offered": offered})
+                    }
+                    rdp_files::Note::Progress { set, done, total } => serde_json::json!({"kind": "progress", "set": set, "done": done, "total": total}),
+                    rdp_files::Note::Ready { set, dir, top, files, bytes } => {
+                        rdp_files::ready(&sid, rdp_files::Ready { generation, set, dir, top });
+                        serde_json::json!({"kind": "ready", "set": set, "files": files, "bytes": bytes})
+                    }
+                    rdp_files::Note::Cleared { set } => {
+                        rdp_files::outdated(&sid, set);
+                        serde_json::json!({"kind": "cleared", "set": set})
+                    }
+                };
+                let _ = app.emit(&format!("rdp-files-{sid}"), said);
+            }
+        };
         // How the link is doing, for the tab's connection mark.
         let link = {
             let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
@@ -17801,7 +17834,20 @@ async fn rdp_builtin_open(
                 }
             }
         };
-        let run = tauri::async_runtime::spawn(rdp_client::run(stream, client_addr, login, verify, connected, notice, frame, remote_copy, link, flow, rx));
+        let run = tauri::async_runtime::spawn(rdp_client::run(
+            stream,
+            client_addr,
+            login,
+            verify,
+            connected,
+            notice,
+            frame,
+            remote_copy,
+            remote_files,
+            link,
+            flow,
+            rx,
+        ));
         let outcome = match run.await {
             Ok(r) => r,
             Err(_) => Err("The RDP session stopped on bad data from the server".into()),
@@ -17814,6 +17860,10 @@ async fn rdp_builtin_open(
         }
         drop(route);
         forget_screen_client(&clients, &session_id, generation).await;
+        // The server's files this run brought go, but a set on the clipboard.
+        if let Some(dir) = &files_dir {
+            rdp_files::ended(&session_id, generation, dir);
+        }
         if !attempt.is_current_now() {
             return;
         }
@@ -17859,6 +17909,79 @@ async fn rdp_builtin_paste(rdp_clients: tauri::State<'_, RdpClients>, session_id
         let _ = tx.send(rdp_client::Cmd::Paste(text, keys));
     }
     Ok(())
+}
+
+/// The files copied on this computer for the server's clipboard (the tab's
+/// paste, as with text), then the paste key the tab held back. False when no
+/// files are copied here: the tab sends the text instead.
+#[tauri::command]
+async fn rdp_builtin_paste_files(
+    app: tauri::AppHandle,
+    rdp_clients: tauri::State<'_, RdpClients>,
+    session_id: String,
+    keys: rdp_client::PasteKeys,
+) -> Result<bool, String> {
+    use tauri::Emitter;
+    let paths = file_clipboard::read(&app).await?;
+    if paths.is_empty() {
+        return Ok(false);
+    }
+    let walked = tokio::task::spawn_blocking(move || rdp_files::walk(&paths)).await.map_err(|e| e.to_string())??;
+    if walked.list.is_empty() {
+        return Err("None of the copied files can go to the server: they can't be read, or their names are too long or not allowed there.".into());
+    }
+    if walked.left_out > 0 {
+        let msg = format!(
+            "Left out of the paste: {} of the copied files and folders (they can't be read, or their names are too long or not allowed on the server).",
+            walked.left_out
+        );
+        let _ = app.emit(&format!("session-log-{session_id}"), serde_json::json!({"msg": msg, "type": "warning"}));
+    }
+    if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::PasteFiles(walked.list, std::sync::Arc::new(walked.files), keys));
+    }
+    Ok(true)
+}
+
+/// Bring the files the server copied (that set) here: the user asked, as they
+/// were too many bytes to come on their own.
+#[tauri::command]
+async fn rdp_builtin_fetch_files(rdp_clients: tauri::State<'_, RdpClients>, session_id: String, set: u64) -> Result<(), String> {
+    if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::FetchFiles(set));
+    }
+    Ok(())
+}
+
+/// Stop bringing the server's files (that set), or let them go once here:
+/// unless they are on this computer's clipboard, they are deleted.
+#[tauri::command]
+async fn rdp_builtin_stop_files(rdp_clients: tauri::State<'_, RdpClients>, session_id: String, set: u64) -> Result<(), String> {
+    if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::StopFiles(set));
+    }
+    Ok(())
+}
+
+/// A mark that changes whenever anything goes on this computer's clipboard
+/// (none where that can't be told). The tab takes it when the user copies
+/// files on the server, to tell later whether anything else was copied since.
+#[tauri::command]
+async fn rdp_builtin_files_mark(app: tauri::AppHandle) -> Result<Option<u64>, String> {
+    Ok(file_clipboard::change_mark(&app).await)
+}
+
+/// The server's files (that set, here now) on this computer's clipboard; when
+/// `mark` is given, only if nothing else was copied since it was taken. True
+/// when they went there.
+#[tauri::command]
+async fn rdp_builtin_files_to_clipboard(app: tauri::AppHandle, session_id: String, set: u64, mark: Option<u64>) -> Result<bool, String> {
+    if mark.is_some() && file_clipboard::change_mark(&app).await != mark {
+        return Ok(false);
+    }
+    let top = rdp_files::claim(&session_id, set).ok_or("These files are no longer here.")?;
+    file_clipboard::write(&app, top).await?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -23555,6 +23678,13 @@ fn session_drag_dir(session_id: &str) -> Result<std::path::PathBuf, String> {
     Ok(app_temp_root().join(format!("drag_{}", session_temp_name(session_id)?)))
 }
 
+/// A built-in RDP session run's dir for the files copied on the server
+/// (rdp_files.rs), under the unpredictable root. Generations only go up, so
+/// each run has its own.
+fn session_rdpclip_dir(session_id: &str, generation: u64) -> Result<std::path::PathBuf, String> {
+    Ok(app_temp_root().join(format!("rdpclip_{}_{generation}", session_temp_name(session_id)?)))
+}
+
 /// A session's part of its temp dirs' names: the session id as the frontend
 /// makes it (`session-<id>`, `session-quick-<ms>`, plus `::sftp` / `::fwd`
 /// for the dedicated connections), `::` spelled `__` since `:` can't be in a
@@ -26968,7 +27098,8 @@ pub fn run() {
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config, set_use_ssh_agent,
-            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
+            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_paste_files, rdp_builtin_fetch_files, rdp_builtin_stop_files, rdp_builtin_files_mark,
+            rdp_builtin_files_to_clipboard, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
             telnet_connect, telnet_open_terminal, ftp_connect, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
