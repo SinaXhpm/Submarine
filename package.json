@@ -47,6 +47,7 @@
     "android:dev:raw": "tauri android dev",
     "android:build:apk": "tauri android build --apk --target aarch64 armv7",
     "android:build:play": "tauri android build --aab --target aarch64 armv7 --features app-store",
+    "android:build:native-tailcat": "bash scripts/build-libtailcat-android.sh",
     "android:build": "npm run android:build:apk"
   },
   "dependencies": {
