@@ -87,7 +87,7 @@
     </td>
     <td width="33%" valign="top" align="center">
       <a href="docs/screenshots/add-server.png"><img src="docs/screenshots/add-server.png" alt="Server details form with the type, folder, a tag colour picker, host, port and login method" /></a>
-      <br/><sub><b>Server form</b> — type (SSH / RDP / VNC / Telnet), folder, tag colour, login, proxy and tunnels in one place</sub>
+      <br/><sub><b>Server form</b> — type (SSH / FTP / RDP / VNC / Telnet), folder, tag colour, login, proxy and tunnels in one place</sub>
     </td>
   </tr>
 </table>
@@ -160,12 +160,13 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 
 - **Nested folders** with colours, drag and drop to move servers and folders, and a search box
 - **Tag colours** on every server, so production and staging are never confused
-- **Four server types**: SSH, Telnet, VNC and RDP — one list, one vault
+- **Five server types**: SSH, FTP and FTPS, Telnet, VNC and RDP — one list, one vault
+- **Cards or a list**: each server shows its kind of connection, its login and port, and a dot when its tab is open
 - **Jump hosts and proxies** per server: another saved server as a jump host, or a SOCKS5 or HTTP proxy
 - **Import** from PuTTY `.reg`, MobaXterm `.mxtsessions`, an OpenSSH config, or a Submarine JSON export; **generate a key** right from the server form
 - **Quick connect** for a host you haven't saved yet — it is added to your root folder (with what you typed, password or key included), so remove it afterwards if you don't want it kept
 - **Autostart**: flag a server and it opens and connects when the app launches
-- **Per-server notes** and **per-server commands** (or commands for all servers)
+- **Per-server notes** and **per-server commands** (or commands for all servers); a command can be **secret** (hidden until you show it, and run, never pasted) and carry **tags** to filter by
 
 ### Login methods
 
@@ -180,12 +181,15 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 
 ### Terminal
 
-- Tabbed sessions per server and several shells per session (a new one takes the lowest free number); **rename** tabs
+- **Tabs as in a browser**: the **+** after the last tab (or Ctrl+Shift+T, ⌘T on a Mac) opens a server, Ctrl+Tab moves between tabs, drag a tab to move it, middle-click to close it
+- Several shells per session (a new one takes the lowest free number); **rename** tabs
 - **A terminal with its own login**: a shell on a connection of its own instead of a channel of the tab's, once or always for a server (for software that ties rights to the login, such as CA Access Control's `sesu`)
 - **Search** the scroll-back with Ctrl+Shift+F and the **command history** with Ctrl+Shift+R (Cmd+Shift on macOS); plain Ctrl+F and Ctrl+R stay the shell's
+- Ctrl+Shift+K **clears** a terminal, Ctrl+Shift+W closes it and Ctrl+Shift+click opens another one (Cmd+Shift on macOS)
+- **Change any shortcut** in Settings → Keyboard shortcuts, even keys the shell uses: Ctrl+C can be Copy, as in Windows Terminal (with a selection it copies; without one it still stops the program)
 - Full xterm.js — true colour, ANSI 256, mouse support, **10,000 lines of scrollback** by default (you can change it)
-- **Colour schemes**: Submarine, Campbell, One Half Dark / Light, Dracula, Solarized Dark, Nord and Gruvbox Dark, or import your own from Windows Terminal; built-in fonts, or any font installed on the device (Nerd Fonts work for starship / powerline prompts)
-- **Select to copy**, right-click to paste (bracketed paste), Ctrl+Shift+C / Ctrl+Shift+A; wrapped lines copy as one line
+- **Colour schemes**: Submarine, Campbell, One Half Dark / Light, Dracula, Solarized Dark, Nord and Gruvbox Dark, or import your own from Windows Terminal; built-in fonts, or any font installed on the device (Nerd Fonts work for starship / powerline prompts); a separate **interface font** for menus and panels in Settings → UI customization
+- **Select to copy**, right-click to paste (bracketed paste), Ctrl+Shift+C / Ctrl+Shift+A; wrapped lines copy as one line. In programs that take the mouse (mc, htop, vim), Shift+drag copies and Shift+right-click pastes (Option on a Mac)
 - **Links ask first** — a clickable link, and a multi-line paste, wait for your OK
 - **Type the saved password at a sudo prompt** with one button
 - **Reconnect-safe scroll-back** — when a session drops and reconnects, earlier output stays; a divider marks the boundary. If a connect times out or the server can't be reached, Submarine offers to try again.
@@ -232,7 +236,7 @@ Pick a local folder, pick a remote folder, and Submarine keeps them in sync.
 ### Remote desktops: VNC, RDP and Telnet
 
 - **VNC** opens as the remote screen in the tab, directly or through an SSH server, on the PC and on the phone (touch, zoom, a keyboard button). Tight, ZRLE, TRLE, CopyRect and Raw encodings; the desktop takes the tab's size where the server allows it. **Speed and quality** per server on this device: the encoding, the colours (full, 16 or 8 bits), the most updates a second and the resolution, with quick choices (Standard, Less data, Least data). The **clipboard** is shared both ways, as plain ASCII text (links, commands): classic VNC carries no more. Plain VNC is **not encrypted**, and the form, the list and the tab say so.
-- **RDP** opens in **this computer's RDP app** by default (Windows Remote Desktop Connection, Remmina or FreeRDP on Linux, the system handler on macOS), with per-server full-screen, window size, clipboard and drive-sharing options kept on this device. Through an SSH server it gets the same loopback address every time, and Remote Desktop Connection on Windows gets the saved password (encrypted with DPAPI in its `.rdp` file, which is deleted once read). The **built-in RDP client** (in the tab, on the PC and the phone) is **experimental** and opt-in; its certificate is pinned like an SSH host key and checked before anything secret is sent. It also needs **NLA** (the server proves it knows the password before the client sends it): a server that answers "TLS only" is refused with nothing sent, unless you allow that one server ("Allow without NLA"). It shares the **clipboard** (text, both ways) and, on the PC, **files**: a folder or a whole drive, read only or not, which the server sees as `\\tsclient\<name>`. **Speed and quality** per server: colours (32, 24 or 16 bits), desktop effects, the network's speed, RemoteFX and the resolution, with quick choices (Best picture, Balanced, Less data).
+- **RDP** opens in **this computer's RDP app** by default (Windows Remote Desktop Connection, Remmina or FreeRDP on Linux, the system handler on macOS), with per-server full-screen, window size, clipboard and drive-sharing options kept on this device. Through an SSH server it gets the same loopback address every time, and Remote Desktop Connection on Windows gets the saved password (encrypted with DPAPI in its `.rdp` file, which is deleted once read). The **built-in RDP client** (in the tab, on the PC and the phone) is **experimental** and opt-in; its certificate is pinned like an SSH host key and checked before anything secret is sent. It also needs **NLA** (the server proves it knows the password before the client sends it): a server that answers "TLS only" is refused with nothing sent, unless you allow that one server ("Allow without NLA"). It shares the **clipboard** (text, both ways) and, on the PC, **files**: a folder or a whole drive, read only or not, which the server sees as `\\tsclient\<name>`; on a Windows server, **Open it on the server** in the tab's Files panel types its address into Run. **Speed and quality** per server: colours (32, 24 or 16 bits), desktop effects, the network's speed, RemoteFX and the resolution, with quick choices (Best picture, Balanced, Less data).
 - **Both remote screens** have a **connection mark** in the tab's bar (Good, Fair, Weak or Not answering, with the round trip, the data rates and the session's bytes; on a weak link it offers to use less data), change their speed and quality from the tab, and **pause while the tab is hidden** (on by default), so a tab nobody looks at sends no picture.
 - **Telnet** opens in a terminal tab, directly or through an SSH server, with proper option negotiation. It is **not encrypted** and says so.
 - All three can go **through an SSH server** you already have.
@@ -241,7 +245,7 @@ Pick a local folder, pick a remote folder, and Submarine keeps them in sync.
 
 A read-only inspection pane for the active session — no terminal commands needed.
 
-- **Overview** (hostname, OS, kernel, uptime, load, CPU, memory, swap, disks), **Network** (interfaces, routes, `iptables` / `nftables` rules), **Ports** (listening sockets with process names) and **Services** (`systemctl` units with Start / Stop / Restart)
+- **Overview** (hostname, OS, kernel, uptime, load, CPU, memory, swap, disks), **Network** (interfaces, routes, `iptables` / `nftables` rules), **Ports** (listening sockets with process names) and **Services** (systemd, OpenRC and OpenWrt's procd, with Start / Stop / Restart)
 - **Docker manager**: containers (start, stop, restart, pause, kill), live logs, stats, inspect, env / mounts / ports, images, volumes, networks, compose files, safe prune (never `--volumes`, never `-a`), and `docker exec` shells as session tabs
 
 ### Monitoring and the Wall
@@ -276,6 +280,7 @@ The assistant's and the agents' screens are in English for now.
 - Each profile is its own vault with its own master password; several can live on one device
 - **Quick unlock** (off by default): open a profile with **Windows Hello** (needs a TPM) or an **Android fingerprint**. The password itself is never kept: the vault key is sealed to a key in the TPM or the Android Keystore. Not offered on Linux, macOS, iPhone or iPad, never synced or exported.
 - **Portable mode** on Windows: all data in a `submarine-data` folder next to the exe
+- **A copy in a folder** (on a computer): every save also writes the profile's encrypted file into a folder you choose. Put it in OneDrive, Google Drive or Dropbox, and Import opens it on your other computers with the profile's password. It is a copy, not sync
 - **Send feedback** from the app (Settings → Help & feedback, or Feedback on the profile list): only what you type is sent, and a name and an email if you give them — no logs, no list of servers, no system details
 
 ### Cloud sync (optional)
@@ -297,11 +302,13 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Debian / Ubuntu / Mint | `.deb` — `sudo apt install ./submarine_*.deb` |
 | Fedora / RHEL / openSUSE | `.rpm` — `sudo dnf install ./submarine-*.rpm` |
 | Arch / Manjaro / EndeavourOS | `.pkg.tar.zst` — `sudo pacman -U submarine-*.pkg.tar.zst` |
-| Any Linux | `.AppImage` — `chmod +x` and double-click; a Flatpak can be built from `packaging/flatpak`, and the Flathub listing comes with the final 0.5.0 |
+| Any Linux | `.AppImage` — `chmod +x` and double-click; a Flatpak can be built from `packaging/flatpak` |
 | Android 7.0+ | `.apk` — sideload, no Play Store required |
 | iPhone / iPad (iOS 15+), and macOS signed by Apple | the beta on [TestFlight](https://testflight.apple.com/join/TmefAPrY) — install Apple's TestFlight app, then open the link |
 
 The Windows `.exe` installs for the current user and needs no administrator rights; `/S` installs silently and `/D=<folder>` (last on the line) picks the folder. The `.msi` installs for all users.
+
+The profile list says when a newer version is out. To hear about betas too, turn on **Tell me about beta versions** in Settings → Updates.
 
 > The Windows build is **not code-signed**. Windows SmartScreen will prompt — click "More info → Run anyway". The macOS download isn't signed by Apple yet: macOS says the app is damaged until you move it to Applications and run `xattr -dr com.apple.quarantine /Applications/Submarine.app`, or take the TestFlight version, which Apple signs. The Android APK **is signed** with the author's key: `apksigner verify --print-certs` should show the certificate SHA-256 `e9e350dc9f8628bee461be3424c0c2b2180f00685cc380de80c86808ae669f1c`. Android sideloading needs "Install unknown apps" enabled for the installer source. Releases from v0.4.0-beta.1 on carry a `SHA256SUMS` file to check a download against.
 
@@ -330,6 +337,8 @@ Submarine on Android is a native build of the same Rust core — same SSH stack,
 
 - **Same encrypted vault.** With cloud sync on, your profiles appear on the phone as they were on the desktop.
 - **Touch-friendly terminal.** An inline **key bar** between the terminal and the keyboard has Esc, Tab, arrows, `|`, `~`, `/`, `-` and Termux-style sticky modifiers (tap to arm, double-tap to lock), so Ctrl+letter, Alt+letter and Shift+Tab work.
+- **A hardware keyboard** (a keyboard cover, USB or Bluetooth) types into the terminal as on a computer: the terminal takes the focus, and Shift and AltGr characters work.
+- **A long press** on the terminal shows a **Paste** button; copy and paste go through Android's clipboard.
 - **Auto-scroll on focus** so the prompt never sits behind the keyboard.
 - **SFTP file browser** with multi-select, upload from the phone's storage and download into Downloads; exports go through the system file picker.
 - **VNC and the built-in RDP client** show the remote screen with touch, zoom and a keyboard button, the connection mark and their speed and quality; a phone shares no files with an RDP server.

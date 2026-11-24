@@ -170,7 +170,7 @@
         {
           "id": "commands",
           "title": "Befehle und Notizen",
-          "text": "Speichern Sie Befehle, die Sie oft ausführen, und fügen Sie sie in ein Terminal ein oder führen Sie sie dort aus."
+          "text": "Speichern Sie Befehle, die Sie oft ausführen, und fügen Sie sie in ein Terminal ein oder führen Sie sie dort aus. Ein geheimer Befehl bleibt verborgen, bis Sie ihn anzeigen, und Tags halten Ordnung."
         },
         {
           "id": "phone",
@@ -197,7 +197,8 @@
             "Durchsuchen Sie mit Ctrl+Shift+F, was das Terminal anzeigt, und mit Ctrl+Shift+R die Befehle, die Sie eingegeben haben (auf dem Mac Cmd+Shift). Ctrl+F und Ctrl+R ohne Shift gehen weiterhin an die Shell.",
             "Ein Rechtsklick auf die Schaltfläche + öffnet ein Terminal mit eigener Anmeldung über eine eigene Verbindung: einmalig oder immer für diesen Server.",
             "Ctrl+Shift+K leert ein Terminal, Ctrl+Shift+W schließt es, und Ctrl+Shift+Klick darauf öffnet ein weiteres für denselben Server (auf dem Mac Cmd+Shift).",
-            "True Color, {scrollback} Zeilen zum Zurückscrollen, Farbschemata und Nerd Fonts."
+            "True Color, {scrollback} Zeilen zum Zurückscrollen, Farbschemata und Nerd Fonts.",
+            "Ändern Sie jedes Tastenkürzel unter <em>Einstellungen → Tastenkürzel</em>, auch Tasten, die die Shell nutzt: Ctrl+C kann kopieren, wie in Windows Terminal."
           ],
           "alt": "Die „Wall“: drei Server nebeneinander in einem Fenster"
         },
@@ -252,7 +253,8 @@
           "points": [
             "AES-256-GCM, mit einem Schlüssel, den Argon2id aus Ihrem Passwort ableitet. Das Passwort wird nie gespeichert.",
             "Entsperren mit Windows Hello oder unter Android mit Ihrem Fingerabdruck. Ausgeschaltet, bis Sie es einschalten.",
-            "Wenn Sie das Profil sperren, werden alle Verbindungen geschlossen, auch eine, bei der die Anmeldung noch läuft."
+            "Wenn Sie das Profil sperren, werden alle Verbindungen geschlossen, auch eine, bei der die Anmeldung noch läuft.",
+            "Am Computer bietet die Seite des Profils <strong>Eine Kopie in einem Ordner</strong>: Nach jeder Änderung wird das verschlüsselte Profil auch in einem Ordner Ihrer Wahl gespeichert, etwa in OneDrive oder Dropbox."
           ],
           "alt": "Gespeicherte Zugangsdaten und SSH-Schlüssel im verschlüsselten Profil"
         },
@@ -263,7 +265,8 @@
           "points": [
             "Ein Terminal mit einer Tastenleiste für Ctrl, Alt, Shift, Esc, Tab, die Pfeiltasten und | ~ / -. Ctrl und Alt gelten nach einmaligem Tippen für die nächste Taste, nach zweimaligem Tippen bleiben sie festgestellt.",
             "Dateiübertragung, Tunnel und der KI-Assistent.",
-            "Remote-Desktops mit Touch-Bedienung, Zoom, gemeinsamer Zwischenablage, Verbindungsanzeige und wählbarer Geschwindigkeit. Ein Smartphone gibt keine Dateien für einen RDP-Server frei."
+            "Remote-Desktops mit Touch-Bedienung, Zoom, gemeinsamer Zwischenablage, Verbindungsanzeige und wählbarer Geschwindigkeit. Ein Smartphone gibt keine Dateien für einen RDP-Server frei.",
+            "Unter Android tippt eine Tastaturhülle oder eine USB- oder Bluetooth-Tastatur im Terminal wie an einem Computer."
           ],
           "alt": "Submarine auf einem Android-Smartphone: ein SSH-Terminal mit Tastenleiste"
         }

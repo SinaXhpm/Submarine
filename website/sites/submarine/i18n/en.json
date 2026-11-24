@@ -170,7 +170,7 @@
         {
           "id": "commands",
           "title": "Commands and notes",
-          "text": "Keep the commands you run often and paste or run them in a terminal."
+          "text": "Keep the commands you run often and paste or run them in a terminal. A secret command stays hidden until you show it, and tags keep them in order."
         },
         {
           "id": "phone",
@@ -197,7 +197,8 @@
             "Search what the terminal shows with Ctrl+Shift+F, and the commands you typed with Ctrl+Shift+R (Cmd+Shift on a Mac). Plain Ctrl+F and Ctrl+R stay with the shell.",
             "Right-click the + button for a terminal with its own login, on a connection of its own: once, or always for that server.",
             "Ctrl+Shift+K clears a terminal, Ctrl+Shift+W closes it, and Ctrl+Shift+click on it opens another one for the same server (Cmd+Shift on a Mac).",
-            "True colour, {scrollback} lines of scrollback, colour schemes and Nerd Fonts."
+            "True colour, {scrollback} lines of scrollback, colour schemes and Nerd Fonts.",
+            "Change any shortcut in <em>Settings → Keyboard shortcuts</em>, even keys the shell uses: Ctrl+C can copy, as in Windows Terminal."
           ],
           "alt": "The Wall: three servers side by side in one window"
         },
@@ -252,7 +253,8 @@
           "points": [
             "AES-256-GCM, with a key made from your password by Argon2id. The password is never stored.",
             "Unlock with Windows Hello, or with your fingerprint on Android. Off until you turn it on.",
-            "Locking the profile closes every connection, even one that is still logging in."
+            "Locking the profile closes every connection, even one that is still logging in.",
+            "On a computer, the profile's page has <strong>A copy in a folder</strong>: after every change, the encrypted profile is also saved to a folder you choose, such as one in OneDrive or Dropbox."
           ],
           "alt": "Saved logins and SSH keys in the encrypted profile"
         },
@@ -263,7 +265,8 @@
           "points": [
             "A terminal with a key bar for Ctrl, Alt, Shift, Esc, Tab, the arrows and | ~ / -. Tap Ctrl or Alt for the next key, or tap it twice to keep it on.",
             "File transfer, tunnels and the AI assistant.",
-            "Remote desktops with touch, zoom, the shared clipboard, the connection mark and the speed choices. A phone shares no files with an RDP server."
+            "Remote desktops with touch, zoom, the shared clipboard, the connection mark and the speed choices. A phone shares no files with an RDP server.",
+            "On Android, a keyboard cover or a USB or Bluetooth keyboard types into the terminal as on a computer."
           ],
           "alt": "Submarine on an Android phone: an SSH terminal with a key bar"
         }

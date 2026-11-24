@@ -170,7 +170,7 @@
         {
           "id": "commands",
           "title": "Comandos e notas",
-          "text": "Guarde os comandos que você usa com frequência e cole-os ou execute-os em um terminal."
+          "text": "Guarde os comandos que você usa com frequência e cole-os ou execute-os em um terminal. Um comando secreto fica oculto até você mostrá-lo, e as etiquetas os mantêm organizados."
         },
         {
           "id": "phone",
@@ -197,7 +197,8 @@
             "Busque no que o terminal mostra com Ctrl+Shift+F e nos comandos que você digitou com Ctrl+Shift+R (Cmd+Shift no Mac). Ctrl+F e Ctrl+R, sem Shift, continuam indo para o shell.",
             "Clique com o botão direito no botão + para abrir um terminal com login próprio, em uma conexão só dele: uma vez, ou sempre para aquele servidor.",
             "Ctrl+Shift+K limpa um terminal, Ctrl+Shift+W o fecha e Ctrl+Shift+clique nele abre outro para o mesmo servidor (Cmd+Shift no Mac).",
-            "True color, {scrollback} linhas de histórico de rolagem, esquemas de cores e Nerd Fonts."
+            "True color, {scrollback} linhas de histórico de rolagem, esquemas de cores e Nerd Fonts.",
+            "Mude qualquer atalho em <em>Configurações → Atalhos de teclado</em>, até teclas que o shell usa: Ctrl+C pode copiar, como no Windows Terminal."
           ],
           "alt": "O Wall: três servidores lado a lado em uma janela"
         },
@@ -252,7 +253,8 @@
           "points": [
             "AES-256-GCM, com uma chave gerada a partir da sua senha pelo Argon2id. A senha nunca é armazenada.",
             "Desbloqueie com o Windows Hello ou, no Android, com a sua impressão digital. Vem desativado até você ativar.",
-            "Bloquear o perfil fecha todas as conexões, até uma que ainda esteja fazendo login."
+            "Bloquear o perfil fecha todas as conexões, até uma que ainda esteja fazendo login.",
+            "No computador, a página do perfil tem <strong>Uma cópia em uma pasta</strong>: depois de cada mudança, o perfil criptografado também é salvo em uma pasta que você escolher, como uma do OneDrive ou do Dropbox."
           ],
           "alt": "Logins salvos e chaves SSH no perfil criptografado"
         },
@@ -263,7 +265,8 @@
           "points": [
             "Um terminal com barra de teclas para Ctrl, Alt, Shift, Esc, Tab, as setas e | ~ / -. Toque uma vez em Ctrl ou Alt para usá-lo na próxima tecla, ou duas vezes para mantê-lo ativado.",
             "Transferência de arquivos, túneis e o assistente de IA.",
-            "Áreas de trabalho remotas com toque, zoom, a área de transferência compartilhada, o indicador de conexão e as opções de velocidade. Um celular não compartilha arquivos com um servidor RDP."
+            "Áreas de trabalho remotas com toque, zoom, a área de transferência compartilhada, o indicador de conexão e as opções de velocidade. Um celular não compartilha arquivos com um servidor RDP.",
+            "No Android, uma capa com teclado ou um teclado USB ou Bluetooth digita no terminal como em um computador."
           ],
           "alt": "O Submarine em um celular Android: um terminal SSH com barra de teclas"
         }
