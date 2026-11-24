@@ -84,7 +84,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # The newest Xcode 27 that is not a beta.
+      # The newest Xcode 27 that is not a beta. Its name goes into the Rust
+      # cache's key: build scripts keep the Xcode paths they found, so a cache
+      # from another Xcode links against folders that aren't there.
       - name: Use Xcode 27
         shell: bash
         run: |
@@ -93,6 +95,7 @@ jobs:
             echo "::error::No Xcode 27 on this runner"; ls -d /Applications/Xcode*.app; exit 1
           fi
           sudo xcode-select -s "$XC"
+          echo "XCODE_NAME=$(basename "$XC" .app)" >> "$GITHUB_ENV"
           xcodebuild -version
 
       - name: Stamp version
@@ -121,7 +124,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
-          key: ios
+          key: ios-${{ env.XCODE_NAME }}
 
       - name: Install npm deps
         run: npm ci
@@ -304,6 +307,8 @@ jobs:
           XC="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V | tail -1)"
           [ -n "$XC" ] || { echo "::error::No Xcode 27 on this runner"; exit 1; }
           sudo xcode-select -s "$XC"
+          # For the Rust cache's key, as in ios-build.
+          echo "XCODE_NAME=$(basename "$XC" .app)" >> "$GITHUB_ENV"
 
       - name: Stamp version
         shell: bash
@@ -333,7 +338,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
-          key: mac-${{ matrix.variant }}
+          key: mac-${{ matrix.variant }}-${{ env.XCODE_NAME }}
 
       - name: Install npm deps
         run: npm ci
