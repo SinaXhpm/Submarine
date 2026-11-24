@@ -16,14 +16,15 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as B64, Engine as _};
 use ironrdp::cliprdr::backend::CliprdrBackend;
 use ironrdp::cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
-    FormatDataResponse, LockDataId,
+    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
+    FileDescriptor, FormatDataRequest, FormatDataResponse, LockDataId,
 };
 use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
@@ -56,6 +57,7 @@ use tokio::sync::mpsc;
 use tokio_rustls::rustls;
 use zeroize::Zeroizing;
 
+use crate::rdp_files::{self, Note, Step};
 use crate::screen_flow::PageSize;
 use crate::screen_link::{Counted, LinkStats, Meter, Probe, Traffic, LINK_EVERY, PROBE_SIDE};
 use crate::vnc_client::{Copies, COPY_EVERY};
@@ -126,6 +128,9 @@ struct Intake {
     clipboard: Option<(u16, mpsc::UnboundedSender<ClipEvent>)>,
     /// A copy too long to keep is going by: none of it reaches IronRDP.
     passing_copy_over: bool,
+    /// The failed answer IronRDP is to get in place of the one passed over
+    /// (`failed_answer`, `settle`).
+    owed: Option<Vec<u8>>,
     /// The fast-path update being put together: its bytes so far, and the
     /// parts of a bitmap update, to look at once it is whole.
     update_bytes: usize,
@@ -217,7 +222,13 @@ impl Intake {
             if first {
                 self.passing_copy_over = declared > MAX_CHANNEL_BYTES;
                 if self.passing_copy_over {
-                    let _ = events.send(ClipEvent::RemoteTooLong(declared));
+                    // IronRDP waits for the answer it was: it gets a failed one
+                    // instead, and a copy's text is said to be too long.
+                    let pdu = user_data.get(8..).unwrap_or_default();
+                    self.owed = failed_answer(pdu);
+                    if pdu.starts_with(&[5, 0]) {
+                        let _ = events.send(ClipEvent::ChannelTooLong(declared));
+                    }
                 }
             }
             if self.passing_copy_over {
@@ -241,6 +252,26 @@ impl Intake {
         }
         Ok(true)
     }
+}
+
+/// The failed answer in place of the server's message that starts with
+/// `pdu`, when it answers something IronRDP waits for: a copy's data
+/// (CB_FORMAT_DATA_RESPONSE), or a part of a file (CB_FILECONTENTS_RESPONSE,
+/// for its stream). Each is a header (its type, CB_RESPONSE_FAIL, the length
+/// of what follows) and the stream for a part.
+fn failed_answer(pdu: &[u8]) -> Option<Vec<u8>> {
+    match pdu.get(..2)? {
+        [5, 0] => Some(vec![5, 0, 2, 0, 0, 0, 0, 0]),
+        [9, 0] => Some([&[9, 0, 2, 0, 4, 0, 0, 0][..], pdu.get(8..12)?].concat()),
+        _ => None,
+    }
+}
+
+/// What the intake passed over and IronRDP still waits for, given to it as
+/// a failed answer, so the clipboard goes on.
+fn settle(stage: &mut ActiveStage, intake: &mut Intake) -> Vec<ActiveStageOutput> {
+    let Some(pdu) = intake.owed.take() else { return Vec::new() };
+    clip_step(stage, |c| ironrdp::svc::SvcProcessor::process(c, &pdu).map(Into::into)).unwrap_or_default()
 }
 
 /// A fast-path bitmap update, whole. One that can't be read is passed over
@@ -301,6 +332,13 @@ pub enum Cmd {
     /// Text from this computer's clipboard for the server's, then (when the
     /// user pressed a paste key in the tab) that key, once the server has it.
     Paste(Zeroizing<String>, PasteKeys),
+    /// This computer's copied files for the server's clipboard: the list the
+    /// server is given and the files it names; then the key, as with text.
+    PasteFiles(Vec<FileDescriptor>, Arc<Vec<rdp_files::Local>>, PasteKeys),
+    /// Bring the server's copied files (that set) here: the user asked.
+    FetchFiles(u64),
+    /// Stop bringing that set, or let it go once here.
+    StopFiles(u64),
     /// Whether the tab is shown: while it isn't, the server is asked to stop
     /// sending the picture (where it can), and to send all of it again after.
     Shown(bool),
@@ -369,6 +407,8 @@ const MAX_CLIP_CHARS: usize = 1_000_000;
 /// The most bytes such a copy can take (4 a character at most, and an end):
 /// a longer answer isn't copied out of the channel at all.
 const MAX_CLIP_BYTES: usize = MAX_CLIP_CHARS * 4 + 4;
+/// Said when the server's list of the files it copied can't be read.
+const LIST_UNREAD: &str = "The server's list of copied files couldn't be read.";
 
 /// The keys that do the paste on the server, as operations on the session's
 /// keyboard (`Database`; `held` says what is down there now). The modifier
@@ -412,23 +452,48 @@ fn paste_keys(keys: PasteKeys, held: impl Fn(Scancode) -> bool) -> Vec<Operation
 enum ClipEvent {
     /// The channel is up: this side says what it has to offer (nothing, until the user pastes).
     FormatListWanted,
+    /// What the channel does, as the server and this side agreed (files or not).
+    Caps(ClipboardGeneralCapabilityFlags),
     /// The server answered what this side offered.
     Offered(bool),
-    /// The user copied something on the server; whether it has text.
-    RemoteCopy(Option<ClipboardFormatId>),
+    /// The user copied something on the server: the format of its text and
+    /// of its list of files, where it has them (files only when shared).
+    RemoteCopy { text: Option<ClipboardFormatId>, files: Option<ClipboardFormatId> },
     /// The server wants this side's text, in this format.
     Wanted(ClipboardFormatId),
     /// The text the server copied, as asked for (none: it was gone).
     RemoteText(Option<Vec<u8>>),
     /// The server's answer was longer than MAX_CLIP_BYTES (this many bytes).
     RemoteTooLong(usize),
+    /// An answer longer than the channel takes (MAX_CHANNEL_BYTES; this many
+    /// bytes) went by: IronRDP was given a failed one in its place.
+    ChannelTooLong(usize),
+    /// The list of the files the server copied, and its lock on them.
+    RemoteFiles(Vec<FileDescriptor>, Option<u32>),
+    /// The server's answer to a request for a part of its files (none: it failed).
+    FileData(u32, Option<Vec<u8>>),
+    /// The server reads one of this side's files.
+    FileWanted(FileContentsRequest),
+    /// The server keeps this side's files as offered now, while it reads
+    /// them; then it lets them go.
+    Lock(u32),
+    Unlock(u32),
 }
 
 /// The clipboard channel's backend: it passes what the server does on to the
-/// session loop, which answers through the channel. Text only: no file list
-/// is ever offered, so the server never asks for file contents.
+/// session loop, which answers through the channel. Files go too when
+/// `files` is set (file streams, never paths; see rdp_files.rs).
 #[derive(Debug)]
-struct ClipBridge(mpsc::UnboundedSender<ClipEvent>);
+struct ClipBridge {
+    events: mpsc::UnboundedSender<ClipEvent>,
+    files: bool,
+}
+
+impl ClipBridge {
+    fn send(&self, event: ClipEvent) {
+        let _ = self.events.send(event);
+    }
+}
 
 ironrdp::core::impl_as_any!(ClipBridge);
 
@@ -438,27 +503,40 @@ impl CliprdrBackend for ClipBridge {
     }
 
     fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
-        ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
+        let text = ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES;
+        if !self.files {
+            return text;
+        }
+        text | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+            | ClipboardGeneralCapabilityFlags::FILECLIP_NO_FILE_PATHS
+            | ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+            | ClipboardGeneralCapabilityFlags::HUGE_FILE_SUPPORT_ENABLED
     }
 
     fn on_ready(&mut self) {}
 
     fn on_request_format_list(&mut self) {
-        let _ = self.0.send(ClipEvent::FormatListWanted);
+        self.send(ClipEvent::FormatListWanted);
     }
 
     fn on_format_list_response(&mut self, ok: bool) {
-        let _ = self.0.send(ClipEvent::Offered(ok));
+        self.send(ClipEvent::Offered(ok));
     }
 
-    fn on_process_negotiated_capabilities(&mut self, _capabilities: ClipboardGeneralCapabilityFlags) {}
+    fn on_process_negotiated_capabilities(&mut self, capabilities: ClipboardGeneralCapabilityFlags) {
+        self.send(ClipEvent::Caps(capabilities));
+    }
 
     fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
-        let _ = self.0.send(ClipEvent::RemoteCopy(text_format(available_formats)));
+        let files = available_formats
+            .iter()
+            .find(|f| self.files && f.name().is_some_and(|n| n.value() == ClipboardFormatName::FILE_LIST.value()))
+            .map(|f| f.id);
+        self.send(ClipEvent::RemoteCopy { text: text_format(available_formats), files });
     }
 
     fn on_format_data_request(&mut self, request: FormatDataRequest) {
-        let _ = self.0.send(ClipEvent::Wanted(request.format));
+        self.send(ClipEvent::Wanted(request.format));
     }
 
     fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
@@ -469,16 +547,258 @@ impl CliprdrBackend for ClipBridge {
         } else {
             ClipEvent::RemoteText(Some(response.data().to_vec()))
         };
-        let _ = self.0.send(event);
+        self.send(event);
     }
 
-    fn on_file_contents_request(&mut self, _request: FileContentsRequest) {}
+    fn on_remote_file_list(&mut self, files: &[FileDescriptor], clip_data_id: Option<u32>) {
+        self.send(ClipEvent::RemoteFiles(files.to_vec(), clip_data_id));
+    }
 
-    fn on_file_contents_response(&mut self, _response: FileContentsResponse<'_>) {}
+    fn on_file_contents_request(&mut self, request: FileContentsRequest) {
+        self.send(ClipEvent::FileWanted(request));
+    }
 
-    fn on_lock(&mut self, _data_id: LockDataId) {}
+    fn on_file_contents_response(&mut self, response: FileContentsResponse<'_>) {
+        let data = (!response.is_error()).then(|| response.data().to_vec());
+        self.send(ClipEvent::FileData(response.stream_id(), data));
+    }
 
-    fn on_unlock(&mut self, _data_id: LockDataId) {}
+    fn on_lock(&mut self, data_id: LockDataId) {
+        self.send(ClipEvent::Lock(data_id.0));
+    }
+
+    fn on_unlock(&mut self, data_id: LockDataId) {
+        self.send(ClipEvent::Unlock(data_id.0));
+    }
+}
+
+/// What the session asked of the server's clipboard: one answer comes for
+/// each, in order.
+#[derive(Debug, Clone, Copy)]
+enum AskedFor {
+    Text(ClipboardFormatId),
+    Files,
+}
+
+/// How often the tab is told how far bringing the server's files is.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+/// How often requests the server doesn't answer, and locks no longer in use,
+/// are looked at.
+const CLIP_TIMEOUTS_EVERY: Duration = Duration::from_secs(5);
+
+/// Files through the shared clipboard (rdp_files.rs): the files the server
+/// copied, on their way here, waiting for the user (`fetch`) or here
+/// (`ready`); and this side's files offered to the server (`serve`).
+struct FileClip {
+    /// The session's folder for the server's files: a folder in it for each set.
+    dir: PathBuf,
+    /// What the channel does, as agreed.
+    caps: ClipboardGeneralCapabilityFlags,
+    fetch: Option<rdp_files::Fetch>,
+    /// The set here, while it is the server's newest copy.
+    ready: Option<u64>,
+    /// The sets so far, for their folders' names and the tab.
+    sets: u64,
+    /// When the tab was last told how far the bringing is.
+    progress_said: Option<std::time::Instant>,
+    /// This side's files offered last (the list and the files), offered
+    /// again when the channel starts over.
+    offered: Option<(Vec<FileDescriptor>, Arc<Vec<rdp_files::Local>>)>,
+    serve: rdp_files::Serve,
+}
+
+impl FileClip {
+    fn new(dir: PathBuf) -> Self {
+        FileClip {
+            dir,
+            caps: ClipboardGeneralCapabilityFlags::empty(),
+            fetch: None,
+            ready: None,
+            sets: 0,
+            progress_said: None,
+            offered: None,
+            serve: rdp_files::Serve::default(),
+        }
+    }
+
+    /// The server takes files through the clipboard.
+    fn can_files(&self) -> bool {
+        self.caps.contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
+    }
+
+    /// The server copied something else: the files it copied before go,
+    /// here or on their way.
+    fn outdated(&mut self, say: &dyn Fn(Note)) {
+        if let Some(fetch) = self.fetch.take() {
+            say(Note::Cleared { set: fetch.set });
+            fetch.discard();
+        }
+        if let Some(set) = self.ready.take() {
+            say(Note::Cleared { set });
+        }
+    }
+
+    /// The list of the files the server copied: they come here on their own
+    /// when they are small enough (`AUTO_BYTES`), else they wait for the user.
+    fn listed(
+        &mut self,
+        stage: &mut ActiveStage,
+        list: &[FileDescriptor],
+        lock: Option<u32>,
+        notice: &dyn Fn(&str),
+        say: &dyn Fn(Note),
+    ) -> Vec<ActiveStageOutput> {
+        self.outdated(say);
+        self.sets += 1;
+        let set = self.sets;
+        let huge = self.caps.contains(ClipboardGeneralCapabilityFlags::HUGE_FILE_SUPPORT_ENABLED);
+        let fetch = match rdp_files::Fetch::plan(set, self.dir.join(set.to_string()), list, lock, huge) {
+            Ok(fetch) if fetch.is_empty() => return Vec::new(),
+            Ok(fetch) => fetch,
+            Err(e) => {
+                notice(&e);
+                return Vec::new();
+            }
+        };
+        let auto = fetch.small(rdp_files::AUTO_BYTES);
+        say(Note::Copied { set, files: fetch.files(), bytes: fetch.bytes(), offered: !auto });
+        let fetch = self.fetch.insert(fetch);
+        if !auto {
+            return Vec::new();
+        }
+        let step = fetch.start();
+        self.after(stage, step, notice, say)
+    }
+
+    /// What a step of the bringing leads to: its requests go to the server;
+    /// once it is done, the set is here, and what couldn't come is said.
+    fn after(&mut self, stage: &mut ActiveStage, step: Step, notice: &dyn Fn(&str), say: &dyn Fn(Note)) -> Vec<ActiveStageOutput> {
+        match step {
+            Step::Ask(asks) => {
+                if let Some(fetch) = &self.fetch {
+                    if self.progress_said.is_none_or(|at| at.elapsed() >= PROGRESS_EVERY) {
+                        let (done, total) = fetch.progress();
+                        say(Note::Progress { set: fetch.set, done, total });
+                        self.progress_said = Some(std::time::Instant::now());
+                    }
+                }
+                ask_files(stage, asks)
+            }
+            Step::Done(done) => {
+                let Some(fetch) = self.fetch.take() else { return Vec::new() };
+                if !done.failed.is_empty() {
+                    notice(&format!("Some of the server's files couldn't be brought here: {}.", rdp_files::some_names(&done.failed)));
+                }
+                if done.top.is_empty() {
+                    say(Note::Cleared { set: fetch.set });
+                    fetch.discard();
+                } else {
+                    self.ready = Some(fetch.set);
+                    let dir = fetch.dir().to_path_buf();
+                    say(Note::Ready { set: fetch.set, dir, top: done.top, files: done.files, bytes: done.bytes });
+                }
+                Vec::new()
+            }
+            Step::Failed(why) => {
+                if let Some(fetch) = self.fetch.take() {
+                    say(Note::Cleared { set: fetch.set });
+                    fetch.discard();
+                }
+                notice(&why);
+                Vec::new()
+            }
+        }
+    }
+
+    /// The server's answer to request `stream`, for a part of its files.
+    fn answered(
+        &mut self,
+        stage: &mut ActiveStage,
+        stream: u32,
+        data: Option<&[u8]>,
+        notice: &dyn Fn(&str),
+        say: &dyn Fn(Note),
+    ) -> Vec<ActiveStageOutput> {
+        match self.fetch.as_mut().and_then(|fetch| fetch.answer(stream, data)) {
+            Some(step) => self.after(stage, step, notice, say),
+            None => Vec::new(),
+        }
+    }
+
+    /// The user asked for set `set`, which was too large to come on its own.
+    fn bring(&mut self, stage: &mut ActiveStage, set: u64, notice: &dyn Fn(&str), say: &dyn Fn(Note)) -> Vec<ActiveStageOutput> {
+        match self.fetch.as_mut().filter(|fetch| fetch.set == set && !fetch.started()) {
+            Some(fetch) => {
+                let step = fetch.start();
+                self.after(stage, step, notice, say)
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// The user stopped set `set` coming, or let it go once here.
+    fn stop(&mut self, set: u64, say: &dyn Fn(Note)) {
+        if self.fetch.as_ref().is_some_and(|fetch| fetch.set == set) {
+            if let Some(fetch) = self.fetch.take() {
+                say(Note::Cleared { set });
+                fetch.discard();
+            }
+        } else if self.ready == Some(set) {
+            self.ready = None;
+            say(Note::Cleared { set });
+        }
+    }
+
+    /// The user pasted this side's files in the tab: the server is offered
+    /// them. That lets go of the lock on the server's own copied files
+    /// (IronRDP's `initiate_file_copy`), so any still coming stop.
+    fn offer(
+        &mut self,
+        stage: &mut ActiveStage,
+        list: Vec<FileDescriptor>,
+        files: Arc<Vec<rdp_files::Local>>,
+        notice: &dyn Fn(&str),
+        say: &dyn Fn(Note),
+    ) -> Result<Vec<ActiveStageOutput>, String> {
+        if !self.can_files() {
+            return Err("This server doesn't take files through the clipboard.".into());
+        }
+        if let Some(fetch) = self.fetch.take() {
+            if fetch.started() {
+                notice("Bringing the server's files stopped: this device's files went to the server's clipboard.");
+            }
+            say(Note::Cleared { set: fetch.set });
+            fetch.discard();
+        }
+        let outputs = clip_step(stage, |c| c.initiate_file_copy(list.clone()))?;
+        self.serve.offer(Arc::clone(&files));
+        self.offered = Some((list, files));
+        Ok(outputs)
+    }
+
+    /// The channel started over: the files offered last are offered again;
+    /// none when there are none, or the server no longer takes them.
+    fn offer_again(&mut self, stage: &mut ActiveStage, notice: &dyn Fn(&str), say: &dyn Fn(Note)) -> Option<Vec<ActiveStageOutput>> {
+        let (list, files) = self.offered.take()?;
+        let offered = self.offer(stage, list, files, notice, say).ok();
+        if offered.is_none() {
+            self.withdraw();
+        }
+        offered
+    }
+
+    /// The user pasted text, or the server refused the files: those offered
+    /// can't be read any more (but the ones it locked can).
+    fn withdraw(&mut self) {
+        self.offered = None;
+        self.serve.withdraw();
+    }
+}
+
+/// The requests for parts of the server's files, sent. One IronRDP refuses
+/// comes back as a failed answer (`ClipEvent::FileData`).
+fn ask_files(stage: &mut ActiveStage, asks: Vec<FileContentsRequest>) -> Vec<ActiveStageOutput> {
+    asks.into_iter().flat_map(|ask| clip_step(stage, |c| c.request_file_contents(ask)).unwrap_or_default()).collect()
 }
 
 /// The text format to ask for from what the server offers: Unicode, else ANSI.
@@ -723,6 +1043,9 @@ pub struct Login {
     pub graphics: Graphics,
     /// Share the clipboard with the server (text, both ways).
     pub clipboard: bool,
+    /// With the clipboard shared, files go through it too, both ways: the
+    /// session's folder for the server's (rdp_files.rs). None: text only.
+    pub files_dir: Option<PathBuf>,
     /// Files shared with the server: their channel (rdp_share.rs).
     pub drive: Option<ironrdp::rdpdr::Rdpdr>,
     /// The keyboard layout told to the server (`keyboard_layout`); 0 leaves
@@ -1018,8 +1341,10 @@ fn operations(events: Vec<InputEvent>) -> Vec<Operation> {
 /// without NLA it shows its own login screen whatever was sent); `frame`
 /// sends one frame to the page and says whether the page is still
 /// listening; `remote_copy` gets the text the user copied on the server
-/// (with the clipboard shared); `link` gets how the link is doing, every
-/// `LINK_EVERY` once the desktop is there. Returns why the session ended.
+/// (with the clipboard shared), `remote_files` what becomes of the files the
+/// user copied there (with `Login::files_dir`); `link` gets how the link is
+/// doing, every `LINK_EVERY` once the desktop is there. Returns why the
+/// session ended.
 #[allow(clippy::too_many_arguments)]
 pub async fn run<S, V, VF>(
     stream: S,
@@ -1030,6 +1355,7 @@ pub async fn run<S, V, VF>(
     notice: impl Fn(&str),
     frame: impl Fn(Vec<u8>) -> bool,
     remote_copy: impl Fn(String),
+    remote_files: impl Fn(Note),
     link: impl Fn(LinkStats),
     flow: Arc<crate::screen_flow::Flow>,
     mut cmds: mpsc::UnboundedReceiver<Cmd>,
@@ -1047,11 +1373,14 @@ where
     // The shared clipboard is a channel of its own, only there when it's wanted.
     let mut clip_events = None;
     let mut clip_says = None;
+    let mut file_clip = None;
     if login.clipboard {
         let (tx, rx) = mpsc::unbounded_channel();
         clip_says = Some(tx.clone());
-        connector = connector.with_static_channel(CliprdrClient::new(Box::new(ClipBridge(tx))));
+        let files = login.files_dir.is_some();
+        connector = connector.with_static_channel(CliprdrClient::new(Box::new(ClipBridge { events: tx, files })));
         clip_events = Some(rx);
+        file_clip = login.files_dir.take().map(FileClip::new);
     }
     // Files shared with the server: a channel of its own too.
     let sharing = login.drive.is_some();
@@ -1177,12 +1506,14 @@ where
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut drive_tick = tokio::time::interval(DRIVE_POLL);
     drive_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut clip_tick = tokio::time::interval(CLIP_TIMEOUTS_EVERY);
+    clip_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // The shared clipboard: this side's text (offered to the server only once
-    // the user pastes it there), the formats the server's copies were asked
-    // for in (one answer comes for each, in order), and a paste key held back
-    // until the server has the text.
+    // the user pastes it there), what the server's copies were asked for (one
+    // answer comes for each, in order), and a paste key held back until the
+    // server has the text or the files.
     let mut local_text: Option<Zeroizing<String>> = None;
-    let mut asked_formats: VecDeque<ClipboardFormatId> = VecDeque::new();
+    let mut asked: VecDeque<AskedFor> = VecDeque::new();
     let mut held_paste: Option<(PasteKeys, tokio::time::Instant)> = None;
     // The server's copies reach the tab at most every COPY_EVERY, the latest
     // one winning, and what goes wrong with them is said once: a small PDU from
@@ -1190,7 +1521,7 @@ where
     let mut copies = Copies::default();
     let mut copy_tick = tokio::time::interval(COPY_EVERY);
     copy_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let (mut said_clip_failed, mut said_too_long) = (false, false);
+    let (mut said_clip_failed, mut said_too_long, mut said_list_unread) = (false, false, false);
     let once = |said: &mut bool, msg: &str| {
         if !std::mem::replace(said, true) {
             notice(msg);
@@ -1222,47 +1553,131 @@ where
             if intake.pass(Action::X224, &pdu)? {
                 stage.process(&mut image, Action::X224, &pdu).map_err(|e| format!("RDP: {e}"))?
             } else {
-                Vec::new()
+                settle(&mut stage, &mut intake)
             }
         } else {
             tokio::select! {
                 Some(event) = next_clip_event(&mut clip_events) => match event {
-                    ClipEvent::FormatListWanted => offer_text(&mut stage, local_text.is_some()).unwrap_or_else(|e| {
-                        once(&mut said_clip_failed, &e);
+                    ClipEvent::FormatListWanted => {
+                        match file_clip.as_mut().and_then(|fc| fc.offer_again(&mut stage, &notice, &remote_files)) {
+                            Some(outputs) => outputs,
+                            None => offer_text(&mut stage, local_text.is_some()).unwrap_or_else(|e| {
+                                once(&mut said_clip_failed, &e);
+                                Vec::new()
+                            }),
+                        }
+                    }
+                    ClipEvent::Caps(caps) => {
+                        if let Some(fc) = &mut file_clip {
+                            fc.caps = caps;
+                        }
                         Vec::new()
-                    }),
-                    // The server has the text: the held-back paste key goes now.
-                    // Refused, it would paste what the server had before: it doesn't.
-                    ClipEvent::Offered(taken) => match held_paste.take() {
-                        Some((keys, _)) if taken => {
-                            let ops = paste_keys(keys, |k| db.is_key_pressed(k));
-                            let fast = db.apply(ops).into_vec();
-                            stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
+                    }
+                    // The server has the text or the files: the held-back paste
+                    // key goes now. Refused, it would paste what the server had
+                    // before: it doesn't.
+                    ClipEvent::Offered(taken) => {
+                        let files = file_clip.as_ref().is_some_and(|fc| fc.offered.is_some());
+                        if !taken {
+                            if let Some(fc) = &mut file_clip {
+                                fc.withdraw();
+                            }
                         }
-                        Some(_) => {
-                            notice("The server didn't take this device's text, so nothing was pasted.");
-                            Vec::new()
+                        match held_paste.take() {
+                            Some((keys, _)) if taken => {
+                                let ops = paste_keys(keys, |k| db.is_key_pressed(k));
+                                let fast = db.apply(ops).into_vec();
+                                stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
+                            }
+                            Some(_) => {
+                                notice(if files {
+                                    "The server didn't take this device's files, so nothing was pasted."
+                                } else {
+                                    "The server didn't take this device's text, so nothing was pasted."
+                                });
+                                Vec::new()
+                            }
+                            None => Vec::new(),
                         }
-                        None => Vec::new(),
-                    },
-                    ClipEvent::RemoteCopy(Some(format)) => match clip_step(&mut stage, |c| c.initiate_paste(format)) {
-                        Ok(outputs) => {
-                            asked_formats.push_back(format);
-                            outputs
+                    }
+                    // Files go before text: a copy that has both is mostly
+                    // files with their names as text.
+                    ClipEvent::RemoteCopy { text, files } => {
+                        if let Some(fc) = &mut file_clip {
+                            fc.outdated(&remote_files);
                         }
-                        Err(e) => {
-                            once(&mut said_clip_failed, &e);
-                            Vec::new()
+                        let files = files.filter(|_| file_clip.as_ref().is_some_and(FileClip::can_files));
+                        let ask = match (files, text) {
+                            (Some(format), _) => Some((format, AskedFor::Files)),
+                            (None, Some(format)) => Some((format, AskedFor::Text(format))),
+                            (None, None) => None,
+                        };
+                        match ask {
+                            Some((format, what)) => match clip_step(&mut stage, |c| c.initiate_paste(format)) {
+                                Ok(outputs) => {
+                                    asked.push_back(what);
+                                    outputs
+                                }
+                                Err(e) => {
+                                    once(&mut said_clip_failed, &e);
+                                    Vec::new()
+                                }
+                            },
+                            None => Vec::new(),
                         }
-                    },
-                    ClipEvent::RemoteCopy(None) => Vec::new(),
+                    }
                     ClipEvent::RemoteText(None) => {
-                        asked_formats.pop_front();
+                        asked.pop_front();
                         Vec::new()
                     }
                     ClipEvent::RemoteTooLong(bytes) => {
-                        asked_formats.pop_front();
-                        once(&mut said_too_long, &format!("The server's copy is too long to bring over ({bytes} bytes; the most is {MAX_CLIP_CHARS} characters)."));
+                        match asked.pop_front() {
+                            Some(AskedFor::Files) => once(&mut said_list_unread, LIST_UNREAD),
+                            _ => once(&mut said_too_long, &format!("The server's copy is too long to bring over ({bytes} bytes; the most is {MAX_CLIP_CHARS} characters).")),
+                        }
+                        Vec::new()
+                    }
+                    // Its failed answer comes next, in its place.
+                    ClipEvent::ChannelTooLong(bytes) => {
+                        let msg = match asked.front() {
+                            Some(AskedFor::Files) => format!("The server copied more files than are brought over at once (the most is {} files and folders).", rdp_files::MAX_FILES),
+                            _ => format!("The server's copy is too long to bring over ({bytes} bytes; the most is {MAX_CLIP_CHARS} characters)."),
+                        };
+                        once(&mut said_too_long, &msg);
+                        Vec::new()
+                    }
+                    ClipEvent::RemoteFiles(list, lock) => {
+                        asked.pop_front();
+                        match &mut file_clip {
+                            // An older copy's, with a newer one on its way: passed over.
+                            Some(fc) if asked.is_empty() => fc.listed(&mut stage, &list, lock, &notice, &remote_files),
+                            _ => Vec::new(),
+                        }
+                    }
+                    ClipEvent::FileData(stream, data) => match &mut file_clip {
+                        Some(fc) => fc.answered(&mut stage, stream, data.as_deref(), &notice, &remote_files),
+                        None => Vec::new(),
+                    },
+                    ClipEvent::FileWanted(request) => {
+                        let response = match &mut file_clip {
+                            Some(fc) => fc.serve.answer(&request),
+                            None => FileContentsResponse::new_error(request.stream_id),
+                        };
+                        clip_step(&mut stage, |c| c.submit_file_contents(response)).unwrap_or_else(|e| {
+                            once(&mut said_clip_failed, &e);
+                            Vec::new()
+                        })
+                    }
+                    ClipEvent::Lock(id) => {
+                        if let Some(fc) = &mut file_clip {
+                            fc.serve.lock(id);
+                        }
+                        Vec::new()
+                    }
+                    ClipEvent::Unlock(id) => {
+                        if let Some(fc) = &mut file_clip {
+                            fc.serve.unlock(id);
+                        }
                         Vec::new()
                     }
                     ClipEvent::Wanted(format) => {
@@ -1278,15 +1693,36 @@ where
                         })
                     }
                     ClipEvent::RemoteText(Some(data)) => {
-                        let format = asked_formats.pop_front().unwrap_or(ClipboardFormatId::CF_UNICODETEXT);
-                        match decode_clip_text(format, &data) {
-                            Ok(text) if !text.is_empty() => copies.due = Some(text),
-                            Ok(_) => {}
-                            Err(e) => once(&mut said_too_long, &e),
+                        match asked.pop_front() {
+                            // An older copy's, with a newer one on its way: passed over.
+                            _ if !asked.is_empty() => {}
+                            Some(AskedFor::Files) => once(&mut said_list_unread, LIST_UNREAD),
+                            asked_for => {
+                                let format = match asked_for {
+                                    Some(AskedFor::Text(format)) => format,
+                                    _ => ClipboardFormatId::CF_UNICODETEXT,
+                                };
+                                match decode_clip_text(format, &data) {
+                                    Ok(text) if !text.is_empty() => copies.due = Some(text),
+                                    Ok(_) => {}
+                                    Err(e) => once(&mut said_too_long, &e),
+                                }
+                            }
                         }
                         Vec::new()
                     }
                 },
+                // Requests the server doesn't answer, and locks no longer in
+                // use, are let go.
+                _ = clip_tick.tick(), if file_clip.is_some() => {
+                    if let Some(fc) = &mut file_clip {
+                        fc.serve.tick();
+                    }
+                    clip_step(&mut stage, |c| c.drive_timeouts()).unwrap_or_else(|e| {
+                        once(&mut said_clip_failed, &e);
+                        Vec::new()
+                    })
+                }
                 _ = copy_tick.tick(), if copies.due.is_some() => {
                     if let Some(text) = copies.take(std::time::Instant::now()) {
                         remote_copy(text);
@@ -1327,7 +1763,7 @@ where
                     if intake.pass(action, &payload)? {
                         stage.process(&mut image, action, &payload).map_err(|e| format!("RDP: {e}"))?
                     } else {
-                        Vec::new()
+                        settle(&mut stage, &mut intake)
                     }
                 }
                 cmd = cmds.recv() => match cmd {
@@ -1358,8 +1794,43 @@ where
                         fast.extend(db.apply(operations(part)).into_vec());
                         stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
                     }
+                    Some(Cmd::PasteFiles(list, files, keys)) => {
+                        let offered = match &mut file_clip {
+                            Some(fc) => fc.offer(&mut stage, list, files, &notice, &remote_files),
+                            None => Err("Files can't go through the clipboard in this session.".into()),
+                        };
+                        // As with text: the key goes once the server has the files,
+                        // and when they can't go, at once on its own.
+                        let (outputs, wait) = match offered {
+                            Ok(outputs) => {
+                                local_text = None;
+                                (outputs, PASTE_WAIT)
+                            }
+                            Err(e) => {
+                                notice(&e);
+                                (Vec::new(), Duration::ZERO)
+                            }
+                        };
+                        if keys != PasteKeys::None {
+                            held_paste = Some((keys, tokio::time::Instant::now() + wait));
+                        }
+                        outputs
+                    }
+                    Some(Cmd::FetchFiles(set)) => match &mut file_clip {
+                        Some(fc) => fc.bring(&mut stage, set, &notice, &remote_files),
+                        None => Vec::new(),
+                    },
+                    Some(Cmd::StopFiles(set)) => {
+                        if let Some(fc) = &mut file_clip {
+                            fc.stop(set, &remote_files);
+                        }
+                        Vec::new()
+                    }
                     Some(Cmd::Paste(text, keys)) => {
                         local_text = Some(text);
+                        if let Some(fc) = &mut file_clip {
+                            fc.withdraw();
+                        }
                         if keys != PasteKeys::None {
                             held_paste = Some((keys, tokio::time::Instant::now() + PASTE_WAIT));
                         }
@@ -1716,6 +2187,7 @@ mod tests {
             allow_no_nla: false,
             graphics,
             clipboard: false,
+            files_dir: None,
             drive: None,
             keyboard_layout: 0,
         }
@@ -1796,36 +2268,76 @@ mod tests {
         assert!(decode_clip_text(ClipboardFormatId::CF_UNICODETEXT, &unicode(&"x".repeat(MAX_CLIP_CHARS))).is_ok());
     }
 
+    fn said(rx: &mut mpsc::UnboundedReceiver<ClipEvent>) -> Vec<String> {
+        std::iter::from_fn(|| rx.try_recv().ok()).map(|e| format!("{e:?}")).collect()
+    }
+
     #[test]
     fn what_the_server_does_on_its_clipboard_reaches_the_session_loop() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut bridge = ClipBridge(tx);
+        let mut bridge = ClipBridge { events: tx, files: false };
         // A copy with Unicode text is asked for as Unicode; ANSI only as ANSI; no text: nothing to ask for.
         let f = |id| ClipboardFormat::new(id);
+        let list = || f(ClipboardFormatId::new(49_300)).with_name(ClipboardFormatName::FILE_LIST);
         bridge.on_remote_copy(&[f(ClipboardFormatId::new(49_161)), f(ClipboardFormatId::CF_TEXT), f(ClipboardFormatId::CF_UNICODETEXT)]);
         bridge.on_remote_copy(&[f(ClipboardFormatId::CF_TEXT)]);
         bridge.on_remote_copy(&[f(ClipboardFormatId::new(8))]);
+        // Files aren't shared: a list of them is nothing to ask for.
+        bridge.on_remote_copy(&[list()]);
         bridge.on_request_format_list();
         bridge.on_format_list_response(true);
         bridge.on_format_data_request(FormatDataRequest { format: ClipboardFormatId::CF_UNICODETEXT });
         bridge.on_format_data_response(FormatDataResponse::new_unicode_string("hi"));
         bridge.on_format_data_response(FormatDataResponse::new_error());
-        let mut got = Vec::new();
-        while let Ok(e) = rx.try_recv() {
-            got.push(format!("{e:?}"));
-        }
-        assert_eq!(got.len(), 8, "{got:?}");
-        assert!(got[0].contains("RemoteCopy(Some") && got[0].contains("13"), "{}", got[0]);
-        assert!(got[1].contains("RemoteCopy(Some") && got[1].contains("(1)"), "{}", got[1]);
-        assert_eq!(got[2], "RemoteCopy(None)");
-        assert_eq!(got[3], "FormatListWanted");
-        assert_eq!(got[4], "Offered(true)");
-        assert!(got[5].starts_with("Wanted("), "{}", got[5]);
-        assert!(got[6].starts_with("RemoteText(Some("), "{}", got[6]);
-        assert_eq!(got[7], "RemoteText(None)");
-        // Files are never offered, so this side never stores any.
+        let got = said(&mut rx);
+        assert_eq!(got.len(), 9, "{got:?}");
+        assert!(got[0].contains("text: Some") && got[0].contains("13") && got[0].contains("files: None"), "{}", got[0]);
+        assert!(got[1].contains("text: Some") && got[1].contains("(1)"), "{}", got[1]);
+        assert_eq!(got[2], "RemoteCopy { text: None, files: None }");
+        assert_eq!(got[3], "RemoteCopy { text: None, files: None }");
+        assert_eq!(got[4], "FormatListWanted");
+        assert_eq!(got[5], "Offered(true)");
+        assert!(got[6].starts_with("Wanted("), "{}", got[6]);
+        assert!(got[7].starts_with("RemoteText(Some("), "{}", got[7]);
+        assert_eq!(got[8], "RemoteText(None)");
+        // This side doesn't say it takes files, so the server never offers any.
         assert_eq!(bridge.temporary_directory(), "");
         assert!(!bridge.client_capabilities().contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED));
+
+        // Shared files: the list is found by its name (its number is the server's own).
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut bridge = ClipBridge { events: tx, files: true };
+        let caps = bridge.client_capabilities();
+        for flag in [
+            ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES,
+            ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED,
+            ClipboardGeneralCapabilityFlags::FILECLIP_NO_FILE_PATHS,
+            ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA,
+            ClipboardGeneralCapabilityFlags::HUGE_FILE_SUPPORT_ENABLED,
+        ] {
+            assert!(caps.contains(flag), "{flag:?}");
+        }
+        bridge.on_remote_copy(&[f(ClipboardFormatId::CF_UNICODETEXT), list()]);
+        bridge.on_remote_copy(&[list()]);
+        bridge.on_process_negotiated_capabilities(caps);
+        bridge.on_remote_file_list(&[FileDescriptor::new("a.txt").with_file_size(3)], Some(4));
+        let flags = ironrdp::cliprdr::pdu::FileContentsFlags::RANGE;
+        bridge.on_file_contents_request(FileContentsRequest { stream_id: 7, index: 0, flags, position: 0, requested_size: 3, data_id: Some(1) });
+        bridge.on_file_contents_response(FileContentsResponse::new_data_response(7, &b"abc"[..]));
+        bridge.on_file_contents_response(FileContentsResponse::new_error(8));
+        bridge.on_lock(LockDataId(1));
+        bridge.on_unlock(LockDataId(1));
+        let got = said(&mut rx);
+        assert_eq!(got.len(), 9, "{got:?}");
+        assert!(got[0].contains("text: Some") && got[0].contains("files: Some") && got[0].contains("49300"), "{}", got[0]);
+        assert!(got[1].contains("text: None") && got[1].contains("files: Some"), "{}", got[1]);
+        assert!(got[2].starts_with("Caps("), "{}", got[2]);
+        assert!(got[3].starts_with("RemoteFiles([") && got[3].contains("a.txt") && got[3].ends_with("Some(4))"), "{}", got[3]);
+        assert!(got[4].starts_with("FileWanted(") && got[4].contains("stream_id: 7"), "{}", got[4]);
+        assert_eq!(got[5], "FileData(7, Some([97, 98, 99]))");
+        assert_eq!(got[6], "FileData(8, None)");
+        assert_eq!(got[7], "Lock(1)");
+        assert_eq!(got[8], "Unlock(1)");
     }
 
     // A server nobody changed the speed and quality of must be asked exactly
@@ -2046,7 +2558,13 @@ mod tests {
 
     /// Sends a whole message of `bytes` in chunks; what `pass` said for each.
     fn message(i: &mut Intake, channel: u16, bytes: usize) -> Vec<Result<bool, String>> {
-        let part = [0u8; 16_000];
+        message_with(i, channel, bytes, &[])
+    }
+
+    /// The same, for a message that starts with `head`.
+    fn message_with(i: &mut Intake, channel: u16, bytes: usize, head: &[u8]) -> Vec<Result<bool, String>> {
+        let mut part = [0u8; 16_000];
+        part[..head.len()].copy_from_slice(head);
         let declared = u32::try_from(bytes).unwrap();
         let mut left = bytes;
         let mut said = Vec::new();
@@ -2059,6 +2577,7 @@ mod tests {
             }
             said.push(i.pass(Action::X224, &chunk(channel, declared, flags, &part[..n])));
             flags = NEXT;
+            part[..head.len()].fill(0);
         }
         said
     }
@@ -2215,12 +2734,34 @@ mod tests {
 
     #[test]
     fn a_copy_too_long_to_keep_is_passed_over_and_the_session_goes_on() {
+        use ironrdp::cliprdr::pdu::ClipboardPdu;
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut i = Intake { clipboard: Some((CLIPBOARD, tx)), ..intake() };
         let long = MAX_CHANNEL_BYTES + 5_000_000;
-        assert!(message(&mut i, CLIPBOARD, long).into_iter().all(|said| said == Ok(false)), "none of it reaches IronRDP");
-        let said: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| format!("{e:?}")).collect();
-        assert_eq!(said, [format!("RemoteTooLong({long})")], "said once");
+        // A copy's data (CB_FORMAT_DATA_RESPONSE): said once, and IronRDP is
+        // owed a failed answer in its place.
+        let data = [5, 0, 1, 0, 0, 0, 0, 0];
+        assert!(message_with(&mut i, CLIPBOARD, long, &data).into_iter().all(|said| said == Ok(false)), "none of it reaches IronRDP");
+        assert_eq!(said(&mut rx), [format!("ChannelTooLong({long})")], "said once");
+        let owed = i.owed.take().expect("a failed answer");
+        match ironrdp::core::decode::<ClipboardPdu<'_>>(&owed).unwrap() {
+            ClipboardPdu::FormatDataResponse(r) => assert!(r.is_error()),
+            other => panic!("{other:?}"),
+        }
+        // A part of a file (CB_FILECONTENTS_RESPONSE): that request fails, unsaid.
+        let part = [9, 0, 1, 0, 0, 0, 0, 0, 7, 0, 0, 0];
+        assert!(message_with(&mut i, CLIPBOARD, long, &part).into_iter().all(|said| said == Ok(false)));
+        assert!(said(&mut rx).is_empty());
+        let owed = i.owed.take().expect("a failed answer");
+        assert_eq!(owed, [9, 0, 2, 0, 4, 0, 0, 0, 7, 0, 0, 0]);
+        match ironrdp::core::decode::<ClipboardPdu<'_>>(&owed).unwrap() {
+            ClipboardPdu::FileContentsResponse(r) => assert!(r.is_error() && r.stream_id() == 7 && r.data().is_empty()),
+            other => panic!("{other:?}"),
+        }
+        // Anything else: IronRDP waits for none of it.
+        assert!(message(&mut i, CLIPBOARD, long).into_iter().all(|said| said == Ok(false)));
+        assert_eq!(i.owed, None);
+        assert_eq!(failed_answer(&[9, 0, 1, 0]), None, "a part's answer cut short");
         // A copy that fits comes through, the longest one brought over too.
         assert!(message(&mut i, CLIPBOARD, 40).into_iter().all(|said| said == Ok(true)));
         assert!(message(&mut i, CLIPBOARD, MAX_CLIP_BYTES).into_iter().all(|said| said == Ok(true)));
@@ -2324,6 +2865,7 @@ mod tests {
             |_, _, _| {},
             |_| {},
             |_| true,
+            |_| {},
             |_| {},
             |_| {},
             Arc::default(),

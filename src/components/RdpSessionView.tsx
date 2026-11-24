@@ -8,14 +8,14 @@ import { FilesPanel, LinkMark, LinkPanel, RdpSettingsPanel, ToolPanel, usePauseW
 import { usePageShown } from "../hooks/usePageShown";
 import { readUseSshAgent } from "../util/sshAgent";
 import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
-import type { LinkStats } from "../util/screenLink";
+import { formatBytes, type LinkStats } from "../util/screenLink";
 import {
   RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, RDP_PRESETS, describeRdpOptions, pinRdpAddress, rdpGraphics, rdpNeedsReconnect, rdpShare, readRdpOptions, writeRdpOptions,
   type RdpOptions,
 } from "../util/rdpOptions";
 import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
-import { useT, tx } from "../i18n";
+import { useT, tn, tx } from "../i18n";
 import NotConnected from "./NotConnected";
 import { useWaitToConnect } from "../hooks/useWaitToConnect";
 import { sentenceGap } from "../util/sentences";
@@ -39,6 +39,16 @@ type Opened = { app: string; address: string; via: string | null; tracked: boole
 // (rdp_client.rs, login_error).
 const PASSWORD_REFUSED = /didn't accept the user name or password/;
 type LogLine = { msg: string; type: string; time: string };
+
+// Files the user copied on the server (rdp_files.rs, `rdp-files-<id>`), from
+// its newest copy: "offered" waits for "Bring them here" (too many bytes to
+// come by themselves), "coming" is on its way (`done` bytes so far), "here"
+// waits for "Copy them here", and "copied" is on this device's clipboard.
+type ServerFiles = { set: number; files: number; bytes: number; state: "offered" | "coming" | "here" | "copied"; done?: number; error?: string };
+
+// This device's clipboard mark now (rdp_builtin_files_mark): it changes when
+// anything is copied here. None where that can't be told.
+const clipboardMark = () => invoke<number | null>("rdp_builtin_files_mark").catch(() => null);
 
 // `shown`: the tab is on screen (alone, or in a split), not behind another view.
 export default function RdpSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
@@ -73,6 +83,12 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // click for that): one click does.
   const [serverCopy, setServerCopy] = useState<string | null>(null);
   const inFront = useRef(false);
+  // Files the user copied on the server, and the set that goes on this
+  // device's clipboard by itself once here: the one copied with the tab in
+  // front, or asked for with "Bring them here". With the clipboard's mark
+  // then: it goes there only if nothing else was copied here since.
+  const [serverFiles, setServerFiles] = useState<ServerFiles | null>(null);
+  const filesFor = useRef<{ set: number; mark: Promise<number | null> } | null>(null);
   // The server isn't at the address this device's sharing was chosen for: it
   // is off for this connection (`rdp::moved`).
   const [moved, setMoved] = useState<{ was: string; now: string } | null>(null);
@@ -153,6 +169,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       }).catch(failed);
       setShareClipboard(options.clipboard);
       setServerCopy(null);
+      setServerFiles(null);
+      filesFor.current = null;
       return;
     }
     const options = readRdpOptions(session.serverUuid);
@@ -167,6 +185,44 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     if (waiting) return;
     let cancelled = false;
     const id = session.id;
+    // The server's files are here: on this device's clipboard at once when
+    // that was asked for (`filesFor`), else the bar offers it.
+    const filesHere = async (set: number, files: number, bytes: number) => {
+      const wanted = filesFor.current?.set === set ? filesFor.current : null;
+      filesFor.current = null;
+      let state: ServerFiles["state"] = "here";
+      let error: string | undefined;
+      if (wanted) {
+        const mark = await wanted.mark;
+        // Where the mark can't be told (Linux), only while the tab is in front.
+        if (mark !== null || (inFront.current && document.hasFocus())) {
+          try {
+            if (await invoke<boolean>("rdp_builtin_files_to_clipboard", { sessionId: id, set, mark })) state = "copied";
+          } catch (e) {
+            error = String(e);
+          }
+        }
+      }
+      setServerFiles((f) => (f?.set === set ? { set, files, bytes, state, error } : f));
+    };
+    const filesSaid = (p: any) => {
+      const set = Number(p?.set);
+      if (p?.kind === "copied") {
+        // The server's clipboard holds these now, not the text it had.
+        setServerCopy(null);
+        // Small enough to come by themselves: on this device's clipboard too,
+        // if the user copied them with the tab in front (as with text).
+        filesFor.current = !p.offered && inFront.current && document.hasFocus() ? { set, mark: clipboardMark() } : null;
+        setServerFiles({ set, files: Number(p.files), bytes: Number(p.bytes), state: p.offered ? "offered" : "coming", done: 0 });
+      } else if (p?.kind === "progress") {
+        setServerFiles((f) => (f?.set === set ? { ...f, state: "coming", done: Number(p.done) } : f));
+      } else if (p?.kind === "ready") {
+        void filesHere(set, Number(p.files), Number(p.bytes));
+      } else if (p?.kind === "cleared") {
+        if (filesFor.current?.set === set) filesFor.current = null;
+        setServerFiles((f) => (f?.set === set ? null : f));
+      }
+    };
     const subs = Promise.all([
       listen(`session-log-${id}`, (e: any) => pushLog(e.payload)),
       listen(`fingerprint-prompt-${id}`, (e: any) => {
@@ -235,6 +291,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       listen(`rdp-clipboard-${id}`, (e: any) => {
         takeServerCopy(String(e.payload?.text ?? ""), inFront.current, setServerCopy);
       }),
+      // Files the user copied on the server, on their way here.
+      listen(`rdp-files-${id}`, (e: any) => filesSaid(e.payload)),
     ]);
     // A phone connects once the built-in client is chosen in the tab.
     subs.then(() => { if (!cancelled && (builtin || !IS_MOBILE)) connect(); });
@@ -286,9 +344,11 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   };
 
   // This computer's clipboard to the server's, then the paste key (the Paste
-  // button sends Ctrl+V) once the text is there. When that can't be done, a
-  // held-back key press still goes on its own (its modifier is down on the
-  // server already) and the server pastes what it has; the button sends nothing.
+  // button sends Ctrl+V) once the text is there. Files copied here go instead
+  // of text, when there are any (the backend sends the key then). When that
+  // can't be done, a held-back key press still goes on its own (its modifier is
+  // down on the server already) and the server pastes what it has; the button
+  // sends nothing.
   const pasteToServer = async (keys: PasteKeys, fromKey: boolean) => {
     const keyAlone = () => {
       const code = keys === "shiftinsert" ? scancodeFor("Insert") : keys === "ctrlv" ? scancodeFor("KeyV") : null;
@@ -296,6 +356,15 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       const key = keys === "shiftinsert" ? "Insert" : "v";
       invoke("rdp_builtin_input", { sessionId: session.id, events: [{ t: "key", code, key, down: true }, { t: "key", code, key, down: false }] }).catch(() => {});
     };
+    // A phone's clipboard holds no files.
+    if (!IS_MOBILE) {
+      try {
+        if (await invoke<boolean>("rdp_builtin_paste_files", { sessionId: session.id, keys })) return;
+      } catch (e) {
+        // The files can't go: the text does, if there is any.
+        pushLog({ msg: String(e), type: "warning" });
+      }
+    }
     let text: string;
     try {
       text = await readLocalClipboard();
@@ -383,6 +452,39 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   useEffect(() => {
     if (status !== "connected") setPanel((p) => (p === "link" ? null : p));
   }, [status]);
+
+  // The server's files on this device's clipboard: said for a few seconds.
+  const filesCopied = serverFiles?.state === "copied" ? serverFiles.set : null;
+  useEffect(() => {
+    if (filesCopied === null) return;
+    const timer = setTimeout(() => setServerFiles((f) => (f?.set === filesCopied && f.state === "copied" ? null : f)), 5000);
+    return () => clearTimeout(timer);
+  }, [filesCopied]);
+  // "Bring them here": the files come, then go on this device's clipboard
+  // unless something else is copied here meanwhile.
+  const bringFiles = (set: number) => {
+    filesFor.current = { set, mark: clipboardMark() };
+    setServerFiles((f) => (f?.set === set ? { ...f, state: "coming", done: 0, error: undefined } : f));
+    invoke("rdp_builtin_fetch_files", { sessionId: session.id, set }).catch((e) => pushLog({ msg: String(e), type: "warning" }));
+  };
+  // Stop them coming, or let them go once here: they are deleted.
+  const dropFiles = (set: number) => {
+    if (filesFor.current?.set === set) filesFor.current = null;
+    setServerFiles(null);
+    invoke("rdp_builtin_stop_files", { sessionId: session.id, set }).catch(console.error);
+  };
+  const copyFilesHere = (set: number) => {
+    invoke("rdp_builtin_files_to_clipboard", { sessionId: session.id, set, mark: null }).then(
+      () => setServerFiles((f) => (f?.set === set ? { ...f, state: "copied", error: undefined } : f)),
+      (e) => setServerFiles((f) => (f?.set === set ? { ...f, error: String(e) } : f)),
+    );
+  };
+  const filesLine = (f: ServerFiles) => {
+    const what = tn(f.files, "{count} file ({size})", "{count} files ({size})", { size: formatBytes(f.bytes) });
+    if (f.state === "coming") return t("Bringing the server's files here: {done} of {total}.", { done: formatBytes(f.done ?? 0), total: formatBytes(f.bytes) });
+    if (f.state === "copied") return t("The server's files are on this device's clipboard: {what}.", { what });
+    return t("Files were copied on the server: {what}.", { what });
+  };
 
   const name = displayName || session.serverName;
   if (waiting) return <NotConnected name={name} onConnect={connectNow} onClose={onClose} />;
@@ -621,6 +723,34 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
             <button onClick={() => setServerCopy(null)} aria-label={t("Dismiss")} className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300">
               <X size={12} />
             </button>
+          </div>
+        )}
+        {connected && serverFiles && (
+          <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
+            {serverFiles.state === "coming" && <Loader2 size={12} className="shrink-0 animate-spin-brief text-primary" aria-hidden="true" />}
+            <span className="min-w-0 truncate">{filesLine(serverFiles)}</span>
+            {serverFiles.error && <span className="min-w-0 truncate text-amber-300" title={serverFiles.error}>{serverFiles.error}</span>}
+            {(serverFiles.state === "offered" || serverFiles.state === "here") && (
+              <button
+                onClick={() => (serverFiles.state === "offered" ? bringFiles(serverFiles.set) : copyFilesHere(serverFiles.set))}
+                className="shrink-0 h-6 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 font-semibold"
+              >
+                {serverFiles.state === "offered" ? t("Bring them here") : t("Copy them here")}
+              </button>
+            )}
+            {serverFiles.state === "coming" ? (
+              <button onClick={() => dropFiles(serverFiles.set)} className="ml-auto shrink-0 h-6 px-2 rounded-md bg-white/5 text-zinc-300 hover:text-zinc-100 font-semibold">
+                {t("Stop")}
+              </button>
+            ) : (
+              <button
+                onClick={() => (serverFiles.state === "copied" ? setServerFiles(null) : dropFiles(serverFiles.set))}
+                aria-label={t("Dismiss")}
+                className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300"
+              >
+                <X size={12} />
+              </button>
+            )}
           </div>
         )}
         <div className="relative flex-1 min-h-0 flex flex-col" onKeyDownCapture={onPasteKey}>
