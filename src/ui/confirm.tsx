@@ -401,16 +401,19 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
       {/* Each dialog is keyed by its prompt, so one that follows another of
           the same kind is a new dialog (it animates in and its default
           control takes focus) and not the old one with the text swapped. */}
+      {/* A click beside this one answers nothing. Closing it cancels the
+          whole batch, and files dragged in from the file manager ask while
+          that window is still in front: the click that brought Submarine
+          back landed here and cancelled the upload (#408). Its buttons, the
+          X and Escape answer it. */}
       {owState && createPortal(
         <div key={owState.id}
              className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
-             onClickCapture={ignoreLaterClicks}
-             onClick={() => closeOverwrite("cancel")}>
+             onClickCapture={ignoreLaterClicks}>
           <div ref={owPanelRef}
                role="dialog"
                aria-modal="true"
                aria-labelledby="overwrite-modal-title"
-               onClick={(e) => e.stopPropagation()}
                className="w-full max-w-[420px] bg-[#121214] border border-white/10 rounded-xl shadow-2xl p-4 font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150">
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="flex items-center gap-2">
