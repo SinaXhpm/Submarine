@@ -9513,9 +9513,11 @@ mod mirror_folder_guard_tests {
         std::fs::write(&file, b"x").unwrap();
         assert!(guard_mirror_folder(&dir.join("nope").to_string_lossy()).is_err());
         assert!(guard_mirror_folder(&file.to_string_lossy()).is_err());
-        // A real folder passes, and what comes back is its resolved path.
+        // A real folder passes, and what comes back is its resolved path, in
+        // the plain form (it shows in the mirror's log).
         let ok = guard_mirror_folder(&dir.to_string_lossy()).unwrap();
         assert!(std::path::Path::new(&ok).is_dir());
+        assert!(!ok.starts_with(r"\\?\"), "{ok}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -16773,10 +16775,13 @@ async fn start_mirror(
     mirrors: tauri::State<'_, MirrorMap>,
     session_id: String,
     mut spec: mirror::MirrorSpec,
+    // The first sync alone, with no watcher after it.
+    once: Option<bool>,
 ) -> Result<String, String> {
-    spec.local = guard_mirror_folder(&spec.local)?;
+    let asked_local = spec.local.clone();
+    spec.local = guard_mirror_folder(&asked_local)?;
     let files = mirror_files(&ssh, &session_id).await?;
-    mirror::start(app, session_id, files, Arc::clone(&mirrors), spec).await
+    mirror::start(app, session_id, files, Arc::clone(&mirrors), spec, asked_local, once.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -25619,7 +25624,8 @@ fn guard_mirror_folder(local: &str) -> Result<String, String> {
     if !folder.is_dir() {
         return Err(format!("[MIRROR] The local folder isn't a folder: {local}"));
     }
-    Ok(folder.to_string_lossy().into_owned())
+    // It shows in the mirror's log: without `\\?\` in front where Windows allows.
+    Ok(display_path(&folder))
 }
 
 /// The system folders `check_local_path_policy` refuses, as lowercase paths

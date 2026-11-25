@@ -36,6 +36,13 @@
 //! have is asked about on its own (MDTM, exact and in UTC) before it is
 //! compared; a server that gives no exact times at all isn't mirrored (lib.rs).
 //!
+//! A mirror can also copy one way only (`direction`): from the server to this
+//! device, which never writes to the server and only runs once (nothing on
+//! the server tells us of changes), or from this device to the server, which
+//! never writes here. Any other mirror can run once too: the first sync and
+//! no watcher after it. With patterns that pick its files (`Filter`), that
+//! is a backup of a server's folder to a disk here.
+//!
 //! Deletes go to a `.submarine-trash/` directory on the remote by default
 //! (rename instead of remove), so a fat-fingered local `rm -rf` doesn't
 //! nuke the remote copy. The user can flip `soft_delete = false` per
@@ -77,10 +84,22 @@ pub struct MirrorSpec {
     /// user accidentally `rm`'s something locally.
     #[serde(default = "default_true")]
     pub soft_delete: bool,
-    /// Substring + `*.<ext>` filters. Match against the relative path; any
-    /// hit skips upload / delete propagation.
+    /// Patterns for what is left out ("Skip these", see `Filter`); a hit
+    /// skips upload / delete propagation.
     #[serde(default)]
     pub excludes: Vec<String>,
+    /// Patterns a file has to match to be mirrored ("Only these", see
+    /// `Filter`); none means every file.
+    #[serde(default)]
+    pub includes: Vec<String>,
+    /// Which way files go: "both" (the default, what every mirror did
+    /// before: the first sync copies both ways, then the live mirror
+    /// pushes), "download" (from the server to this device only, and only
+    /// once) or "upload" (from this device to the server only). One way,
+    /// the side it copies from wins every difference, so
+    /// `conflict_resolution` is for "both" only.
+    #[serde(default = "default_direction")]
+    pub direction: String,
     /// How to resolve initial-sync conflicts (file exists on both sides
     /// with different content). Values:
     ///   - "local"  → local content overwrites remote (default; matches
@@ -95,14 +114,19 @@ pub struct MirrorSpec {
 
 fn default_true() -> bool { true }
 fn default_conflict() -> String { "local".to_string() }
+fn default_direction() -> String { "both".to_string() }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MirrorStatus {
     pub id: String,
     pub session_id: String,
+    /// The local folder as the mirror was asked for: the page knows a mirror
+    /// by this and `remote`. The worker uses the resolved one.
     pub local: String,
     pub remote: String,
-    /// "starting" | "scanning" | "initial-sync" | "watching" | "error" | "stopped"
+    /// The spec's `direction`, for the arrow on the mirror's card.
+    pub direction: String,
+    /// "starting" | "scanning" | "initial-sync" | "watching" | "done" | "error" | "stopped"
     pub state: String,
     /// Pending FS events queued for the worker.
     pub queue_depth: u32,
@@ -121,6 +145,10 @@ pub struct MirrorStatus {
     /// Transfers finished so far during the initial sync — uploaded +
     /// downloaded combined. Lets the UI render a progress bar.
     pub transfer_done: u32,
+    /// Copies and deletes that failed (the log says why).
+    pub failed: u32,
+    /// A run that ends after the first sync ("done"), with no watcher.
+    pub once: bool,
     /// Wall-clock time (ms since epoch) of the most recent successful action.
     pub last_event_ms: u128,
     pub error: Option<String>,
@@ -170,30 +198,208 @@ fn now_ms() -> u128 {
 /// file: it doesn't move, and the next start clears it away.
 const MIRROR_TEMP: &str = ".submarine-tmp";
 
-/// True if `rel` (a relative path under the mirror root) matches any of the
-/// exclude patterns. Supports two forms: `*.<ext>` (suffix match) and bare
-/// substring. Hard-coded defaults that are basically always wanted —
-/// `.git`, `node_modules`, editor swap files — are layered in for free.
-fn is_excluded(rel: &str, user_excludes: &[String]) -> bool {
-    const DEFAULTS: &[&str] = &[".git/", "node_modules/", ".DS_Store", "Thumbs.db"];
-    const DEFAULT_EXT: &[&str] = &[".swp", ".swo", ".tmp", ".part", MIRROR_TEMP];
-    let rel_norm = rel.replace('\\', "/");
-    for d in DEFAULTS {
-        if rel_norm.contains(d) { return true; }
+/// Which way a mirror copies (`MirrorSpec::direction`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Direction {
+    Both,
+    /// From the server to this device only.
+    Download,
+    /// From this device to the server only.
+    Upload,
+}
+
+impl Direction {
+    fn of(spec: &MirrorSpec) -> Result<Direction, String> {
+        match spec.direction.as_str() {
+            "" | "both" => Ok(Direction::Both),
+            "download" => Ok(Direction::Download),
+            "upload" => Ok(Direction::Upload),
+            // A newer version's, maybe: better not run than run both ways.
+            other => Err(format!("Unknown mirror direction: {}", other)),
+        }
     }
-    for e in DEFAULT_EXT {
-        if rel_norm.ends_with(e) { return true; }
+
+    /// Which side wins a file both have, with different content. One way, it
+    /// is the side the mirror copies from.
+    fn conflict_mode(self, spec: &MirrorSpec) -> &str {
+        match self {
+            Direction::Both => &spec.conflict_resolution,
+            Direction::Download => "remote",
+            Direction::Upload => "local",
+        }
     }
-    for p in user_excludes {
-        let p = p.trim();
-        if p.is_empty() { continue; }
-        if let Some(ext) = p.strip_prefix("*.") {
-            if rel_norm.ends_with(&format!(".{}", ext)) { return true; }
+
+    /// Whether a move of the scan (its `action`) goes this way.
+    fn moves(self, action: &str) -> bool {
+        match self {
+            Direction::Both => true,
+            Direction::Download => action.starts_with("download-"),
+            Direction::Upload => action.starts_with("upload-"),
+        }
+    }
+
+    /// Whether the mirror writes to the server.
+    fn writes_there(self) -> bool {
+        self != Direction::Download
+    }
+
+    /// Whether the mirror writes on this device.
+    fn writes_here(self) -> bool {
+        self != Direction::Upload
+    }
+
+    /// What a real run tidies: only on the sides it writes to.
+    fn tidy(self) -> Tidy {
+        Tidy { here: self.writes_here(), there: self.writes_there() }
+    }
+}
+
+/// What a scan tidies on its way, on each side: the leftovers of a copy that
+/// was cut off (`MIRROR_TEMP`), and the times of a file both sides have the
+/// same (see `compare_files`). A preview tidies nothing.
+#[derive(Debug, Clone, Copy, Default)]
+struct Tidy {
+    /// On this device.
+    here: bool,
+    /// On the server.
+    there: bool,
+}
+
+/// Which files a mirror takes: those its "Only these" patterns name (every
+/// file when there are none), less those its "Skip these" patterns or the
+/// built-in skips name. Paths are relative to the mirror's top folder, with
+/// `/` between names.
+///
+/// A pattern with `*` or `?` is a glob: `*` stands for any part of a name,
+/// `?` for one character of it, and `**` for any number of folders. Without a
+/// `/`, it is matched against each name in the path (`*.sql` is a .sql file at
+/// any depth); with one, against the path from the top folder
+/// (`backups/**/*.sql`). A `/` at the end names folders only. A folder a
+/// pattern names comes with everything in it.
+///
+/// A pattern without `*` or `?` is matched anywhere in the path ("/" + the
+/// path, and a folder's ends with "/"). That is how skips always worked, so a
+/// mirror saved before there were globs still skips all it skipped then.
+#[derive(Default)]
+struct Filter {
+    only: Vec<Pattern>,
+    skip: Vec<Pattern>,
+}
+
+enum Pattern {
+    Word(String),
+    Glob { re: regex::Regex, anchored: bool, folders_only: bool },
+}
+
+impl Pattern {
+    fn new(text: &str) -> Result<Option<Pattern>, String> {
+        let p = text.trim().replace('\\', "/");
+        if p.is_empty() {
+            return Ok(None);
+        }
+        if !p.contains(['*', '?']) {
+            return Ok(Some(Pattern::Word(p)));
+        }
+        let folders_only = p.ends_with('/');
+        let body = p.trim_end_matches('/');
+        let anchored = body.contains('/');
+        let re = regex::Regex::new(&glob_regex(body.trim_start_matches('/')))
+            .map_err(|e| format!("Pattern {:?}: {}", text.trim(), e))?;
+        Ok(Some(Pattern::Glob { re, anchored, folders_only }))
+    }
+
+    /// Whether the pattern names `rel` or a folder it is in.
+    fn hits(&self, rel: &str, is_dir: bool) -> bool {
+        match self {
+            Pattern::Word(word) => {
+                let path = if is_dir { format!("/{}/", rel) } else { format!("/{}", rel) };
+                path.contains(word.as_str())
+            }
+            Pattern::Glob { re, anchored, folders_only } => {
+                let names: Vec<&str> = rel.split('/').collect();
+                let mut end = 0;
+                for (k, name) in names.iter().enumerate() {
+                    end += name.len() + usize::from(k > 0);
+                    let folder = k + 1 < names.len() || is_dir;
+                    if *folders_only && !folder {
+                        continue;
+                    }
+                    if re.is_match(if *anchored { &rel[..end] } else { name }) {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+}
+
+/// A glob (see `Filter`) as a regex for a whole name or path.
+fn glob_regex(glob: &str) -> String {
+    let mut re = String::from("^");
+    let mut rest = glob;
+    while let Some(c) = rest.chars().next() {
+        if let Some(after) = rest.strip_prefix("**") {
+            let starts_a_name = rest.len() == glob.len() || glob[..glob.len() - rest.len()].ends_with('/');
+            if starts_a_name && after.starts_with('/') {
+                // `**/`: no folder, or any number of them.
+                re.push_str("(?:.*/)?");
+                rest = &after[1..];
+            } else {
+                re.push_str(".*");
+                rest = after;
+            }
             continue;
         }
-        if rel_norm.contains(p) { return true; }
+        match c {
+            '*' => re.push_str("[^/]*"),
+            '?' => re.push_str("[^/]"),
+            _ => re.push_str(&regex::escape(c.encode_utf8(&mut [0; 4]))),
+        }
+        rest = &rest[c.len_utf8()..];
     }
-    false
+    re.push('$');
+    re
+}
+
+impl Filter {
+    fn new(spec: &MirrorSpec) -> Result<Filter, String> {
+        let list = |texts: &[String]| -> Result<Vec<Pattern>, String> {
+            let mut out = Vec::new();
+            for text in texts {
+                out.extend(Pattern::new(text)?);
+            }
+            Ok(out)
+        };
+        Ok(Filter { only: list(&spec.includes)?, skip: list(&spec.excludes)? })
+    }
+
+    /// Whether `rel` is left out (a folder: with all that is in it), by a
+    /// built-in skip or by "Skip these".
+    fn skips(&self, rel: &str, is_dir: bool) -> bool {
+        builtin_skip(rel)
+            || (is_dir && builtin_skip(&format!("{}/", rel)))
+            || self.skip.iter().any(|p| p.hits(rel, is_dir))
+    }
+
+    /// Whether "Only these" takes `rel` (a folder: all that is in it), or
+    /// there are none.
+    fn keeps(&self, rel: &str, is_dir: bool) -> bool {
+        self.only.is_empty() || self.only.iter().any(|p| p.hits(rel, is_dir))
+    }
+
+    /// Whether the mirror takes `rel`: kept and not skipped.
+    fn takes(&self, rel: &str, is_dir: bool) -> bool {
+        self.keeps(rel, is_dir) && !self.skips(rel, is_dir)
+    }
+}
+
+/// The skips every mirror has: version control, packages, and the files
+/// editors and cut copies leave behind.
+fn builtin_skip(path: &str) -> bool {
+    const DEFAULTS: &[&str] = &[".git/", "node_modules/", ".DS_Store", "Thumbs.db"];
+    const DEFAULT_EXT: &[&str] = &[".swp", ".swo", ".tmp", ".part", MIRROR_TEMP];
+    DEFAULTS.iter().any(|d| path.contains(d)) || DEFAULT_EXT.iter().any(|e| path.ends_with(e))
 }
 
 /// Translate a local path under `local_root` into the corresponding remote
@@ -594,17 +800,18 @@ async fn sftp_sha256(sftp: &SftpSession, remote: &str) -> Result<[u8; 32], Strin
     Ok(hasher.finalize().into())
 }
 
-/// `settle`: when the hashes say "the same" across two times, the copy gets
-/// the local file's times, so the next start needn't hash it again (a copy
-/// uploaded before uploads set them). Only in a real run: a dry run or a
-/// scan changes nothing on the server.
+/// `tidy`: when the hashes say "the same" across two times, one copy gets
+/// the other's time, so the next start needn't hash it again (a copy uploaded
+/// before uploads set them): the server's copy gets this one's, or, when the
+/// server is not to be written to, this one gets the server's. Only in a real
+/// run: a dry run or a scan changes nothing.
 async fn compare_files(
     sftp: &SftpSession,
     local: &Path,
     remote: &str,
     local_meta: &std::fs::Metadata,
     remote_attr: &FileAttributes,
-    settle: bool,
+    tidy: Tidy,
 ) -> Result<CompareResult, String> {
     let local_size = local_meta.len();
     let remote_size = remote_attr.size.unwrap_or(0);
@@ -628,9 +835,13 @@ async fn compare_files(
     let lh = local_sha256(local).await?;
     let rh = sftp_sha256(sftp, remote).await?;
     if lh == rh {
-        if settle {
+        if tidy.there {
             if let Some(times) = times_of(local_meta) {
                 let _ = sftp.set_metadata(remote, times).await;
+            }
+        } else if tidy.here {
+            if let Some(secs) = remote_attr.mtime {
+                let _ = filetime::set_file_mtime(local, filetime::FileTime::from_unix_time(i64::from(secs), 0));
             }
         }
         return Ok(CompareResult::Identical);
@@ -651,6 +862,8 @@ pub async fn dry_run(
     if !local_root.is_dir() {
         return Err(format!("local path not a directory: {}", spec.local));
     }
+    let direction = Direction::of(&spec)?;
+    let filter = Filter::new(&spec)?;
     let sftp = files.open().await?;
 
     let mut entries = Vec::new();
@@ -664,13 +877,46 @@ pub async fn dry_run(
     // split avoids hashing each ambiguous file twice.
     let mut scanned = 0u32;
     let mut tree = RemoteTree { coarse_times: files.coarse_times(), ..RemoteTree::default() };
-    walk_remote(&sftp, &spec.remote, &spec.remote, &spec.excludes,
-                &mut tree, &mut scanned, &mut HashSet::new(), false).await?;
-    walk_local(&local_root, &local_root, &spec.remote, &spec.excludes, &sftp,
-               &spec.conflict_resolution, &tree,
-               &mut entries, &mut total_bytes, &mut seen, &mut scanned, &mut Vec::new(), false).await?;
-    remote_only(&tree, &seen, &mut entries, &mut total_bytes);
+    walk_remote(&sftp, &spec.remote, &spec.remote, &filter,
+                &mut tree, &mut scanned, &mut HashSet::new(), Tidy::default()).await?;
+    walk_local(&local_root, &local_root, &spec.remote, &filter, &sftp,
+               direction.conflict_mode(&spec), &tree,
+               &mut entries, &mut total_bytes, &mut seen, &mut scanned, &mut Vec::new(), Tidy::default()).await?;
+    remote_only(&tree, &filter, &seen, &mut entries, &mut total_bytes);
+    one_way(direction, &mut entries, &mut total_bytes);
     Ok(DryRunReport { entries, total_bytes })
+}
+
+/// Leaves the moves of a scan that go the mirror's way, and their size.
+fn one_way(direction: Direction, moves: &mut Vec<DryRunEntry>, total: &mut u64) {
+    if direction == Direction::Both {
+        return;
+    }
+    moves.retain(|e| direction.moves(&e.action));
+    *total = moves.iter().fold(0u64, |sum, e| sum.saturating_add(e.size));
+}
+
+/// The folders the first sync makes, as (on the server, here): those one
+/// side has and the other doesn't, on the sides the mirror writes to, when
+/// the filter takes all that is in them. A folder with files it takes comes
+/// with its first file anyway; an empty one only this way.
+fn folders_to_make<'a>(
+    direction: Direction,
+    filter: &Filter,
+    local_dirs: &'a [String],
+    remote_dirs: &'a HashSet<String>,
+) -> (Vec<&'a String>, Vec<&'a String>) {
+    let local_set: HashSet<&String> = local_dirs.iter().collect();
+    let up = local_dirs
+        .iter()
+        .filter(|rel| direction.writes_there() && !remote_dirs.contains(*rel) && filter.keeps(rel, true))
+        .collect();
+    let mut down: Vec<&String> = remote_dirs
+        .iter()
+        .filter(|rel| direction.writes_here() && !local_set.contains(rel) && filter.keeps(rel, true))
+        .collect();
+    down.sort();
+    (up, down)
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,7 +1282,7 @@ async fn shell_sync_scan(sftp: &SftpSession, targets: &[ShellSyncTarget]) -> Res
                 Some(a) if a.is_symlink() => "skip-link",
                 Some(a) if a.is_dir() => "skip-folder",
                 Some(a) if a.permissions.is_some() && !a.is_regular() => "skip-other",
-                Some(a) => match compare_files(sftp, &local, &remote, &meta, a, false).await? {
+                Some(a) => match compare_files(sftp, &local, &remote, &meta, a, Tidy::default()).await? {
                     CompareResult::Identical => continue,
                     CompareResult::LocalNewer => "update",
                     CompareResult::RemoteNewer => "server-newer",
@@ -1179,7 +1425,8 @@ pub async fn shell_sync_push(
 /// direction using the mirror's `conflict_resolution` setting. Every
 /// visited rel path goes into `seen` so remote_only can identify which
 /// remote files weren't covered here and need a download-new entry.
-/// `scanned` increments once per file visited (for progress UI).
+/// `scanned` increments once per file visited (for progress UI). Files the
+/// filter doesn't take are left out, and folders it skips with all in them.
 ///
 /// An explicit stack, as in walk_remote: a recursive `async fn` polls one more
 /// frame per level, and a deep enough tree overflows the worker's stack. The
@@ -1188,7 +1435,7 @@ async fn walk_local(
     root: &Path,
     dir: &Path,
     remote_root: &str,
-    excludes: &[String],
+    filter: &Filter,
     sftp: &SftpSession,
     conflict_mode: &str,
     tree: &RemoteTree,
@@ -1197,7 +1444,7 @@ async fn walk_local(
     seen: &mut HashSet<String>,
     scanned: &mut u32,
     dirs: &mut Vec<String>,
-    settle: bool,
+    tidy: Tidy,
 ) -> Result<(), String> {
     // With each folder, whether the walk of the server saw into it.
     let mut stack = vec![(dir.to_path_buf(), tree.hides(""))];
@@ -1206,21 +1453,24 @@ async fn walk_local(
         while let Some(entry) = rd.next_entry().await.map_err(|e| format!("dir iter: {}", e))? {
             let path = entry.path();
             let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-            if settle && rel.ends_with(MIRROR_TEMP) {
+            if tidy.here && rel.ends_with(MIRROR_TEMP) {
                 let _ = tokio::fs::remove_file(&path).await;
                 continue;
             }
-            if is_excluded(&rel, excludes) { continue; }
+            // What a skip names as a file it names as a folder too, so this
+            // goes before the look at what it is.
+            if filter.skips(&rel, false) { continue; }
             let meta = match entry.metadata().await { Ok(m) => m, Err(_) => continue };
             if meta.is_dir() {
                 // A folder pattern names it with its "/" (`node_modules/`).
-                if is_excluded(&format!("{}/", rel), excludes) { continue; }
+                if filter.skips(&rel, true) { continue; }
                 let hidden = hidden || tree.hides(&rel);
                 dirs.push(rel);
                 stack.push((path, hidden));
                 continue;
             }
             if !meta.is_file() { continue; } // skip symlinks / sockets / pipes
+            if !filter.keeps(&rel, false) { continue; }
             *scanned = scanned.saturating_add(1);
             let remote_path = match local_to_remote(&path, root, remote_root) {
                 Some(r) => r, None => continue,
@@ -1238,7 +1488,7 @@ async fn walk_local(
                 // Missing on the other side is never a conflict — copy across.
                 None => "upload-new",
                 Some(attr) => {
-                    let cmp = compare_files(sftp, &path, &remote_path, &meta, &attr, settle).await?;
+                    let cmp = compare_files(sftp, &path, &remote_path, &meta, &attr, tidy).await?;
                     match cmp {
                         CompareResult::Identical => continue,
                         // Same-content cases that *do* differ — pick a side per mode.
@@ -1319,7 +1569,10 @@ impl RemoteTree {
 /// error — the user may legitimately be mirroring into a fresh remote
 /// path that the upload pass will create. We hard-skip `.submarine-trash`
 /// so the soft-delete archive never gets dragged back into the local
-/// tree.
+/// tree. What the filter skips is left out (a folder with all in it), and
+/// plain files it doesn't take. A link or an entry of no type stays in, as it
+/// may be a folder with files the filter takes (see `RemoteTree::hides`);
+/// remote_only leaves it out.
 ///
 /// An explicit stack of (folder, depth), as in sftp_download_dir. Boxed
 /// recursion moves the future to the heap but not the polling: every wake goes
@@ -1329,11 +1582,11 @@ async fn walk_remote(
     sftp: &SftpSession,
     remote_root: &str,
     remote_dir: &str,
-    excludes: &[String],
+    filter: &Filter,
     tree: &mut RemoteTree,
     scanned: &mut u32,
     dirs: &mut HashSet<String>,
-    settle: bool,
+    tidy: Tidy,
 ) -> Result<(), String> {
     let trimmed_root = remote_root.trim_end_matches('/').to_string();
     let prefix = format!("{}/", trimmed_root);
@@ -1374,16 +1627,17 @@ async fn walk_remote(
                 tree.unread.insert(rel);
                 continue;
             }
-            if settle && rel.ends_with(MIRROR_TEMP) {
+            if tidy.there && rel.ends_with(MIRROR_TEMP) {
                 let _ = sftp.remove_file(remote_path.as_str()).await;
                 continue;
             }
-            if is_excluded(&rel, excludes) { continue; }
+            if filter.skips(&rel, false) { continue; }
+            if entry.file_type().is_file() && !filter.keeps(&rel, false) { continue; }
             path_bytes = path_bytes.saturating_add(rel.len());
             tree.found.insert(rel.clone(), entry.metadata());
 
             if entry.file_type().is_dir() {
-                if is_excluded(&format!("{}/", rel), excludes) { continue; }
+                if filter.skips(&rel, true) { continue; }
                 dirs.insert(rel);
                 path_bytes = path_bytes.saturating_add(remote_path.len());
                 stack.push((remote_path, depth + 1));
@@ -1396,10 +1650,11 @@ async fn walk_remote(
 }
 
 /// The files only the server has: walk_local already decided the fate of the
-/// others (`seen`), and what is left becomes a download-new entry.
-fn remote_only(tree: &RemoteTree, seen: &HashSet<String>, out: &mut Vec<DryRunEntry>, total: &mut u64) {
+/// others (`seen`), and what is left becomes a download-new entry, if the
+/// filter takes it.
+fn remote_only(tree: &RemoteTree, filter: &Filter, seen: &HashSet<String>, out: &mut Vec<DryRunEntry>, total: &mut u64) {
     for (rel, attr) in &tree.found {
-        if attr.file_type().is_dir() || seen.contains(rel) { continue; }
+        if attr.file_type().is_dir() || seen.contains(rel) || !filter.keeps(rel, false) { continue; }
         let size = attr.size.unwrap_or(0);
         out.push(DryRunEntry { path: rel.clone(), size, action: "download-new".into() });
         *total = total.saturating_add(size);
@@ -1410,24 +1665,36 @@ fn remote_only(tree: &RemoteTree, seen: &HashSet<String>, out: &mut Vec<DryRunEn
 // Public entry — start_mirror
 // ---------------------------------------------------------------------------
 
+/// Starts a mirror: the first sync, then the watcher, or with `once` the
+/// first sync alone (it ends as "done"). `spec.local` is the resolved folder
+/// the mirror works in, `asked_local` the one it was asked for (its status
+/// carries that one).
 pub async fn start(
     app: AppHandle,
     session_id: String,
     files: Files,
     map: MirrorMap,
     spec: MirrorSpec,
+    asked_local: String,
+    once: bool,
 ) -> Result<String, String> {
     let id = next_mirror_id();
     let local_root = PathBuf::from(&spec.local);
     if !local_root.is_dir() {
         return Err(format!("local path not a directory: {}", spec.local));
     }
+    // Here rather than in the worker: a pattern that won't do is told at once.
+    Filter::new(&spec)?;
+    if Direction::of(&spec)? == Direction::Download && !once {
+        return Err("A mirror from the server to this device runs once: nothing tells it about changes on the server.".into());
+    }
 
     let status = MirrorStatus {
         id: id.clone(),
         session_id: session_id.clone(),
-        local: spec.local.clone(),
+        local: asked_local,
         remote: spec.remote.clone(),
+        direction: spec.direction.clone(),
         state: "starting".into(),
         queue_depth: 0,
         uploaded: 0,
@@ -1436,6 +1703,8 @@ pub async fn start(
         scanned: 0,
         transfer_total: 0,
         transfer_done: 0,
+        failed: 0,
+        once,
         last_event_ms: now_ms(),
         error: None,
     };
@@ -1456,7 +1725,7 @@ pub async fn start(
     let spec_t = spec.clone();
     let join = tauri::async_runtime::spawn(async move {
         let run = run_mirror(app_t.clone(), session_t.clone(), id_t.clone(), files,
-                             spec_t, Arc::clone(&status_t), stop_rx);
+                             spec_t, Arc::clone(&status_t), stop_rx, once);
         // A worker cut off by `stop` ends like one that stopped: the card and
         // the map entry go the same way. `Ok` alone: a sender dropped unused
         // is no signal.
@@ -1466,8 +1735,12 @@ pub async fn start(
         };
         match res {
             Ok(()) => {
-                set_state(&app_t, &status_t, "stopped", None).await;
-                emit_log(&app_t, &session_t, &id_t, "info", "stopped", None, None);
+                // A run once that got to its end said so ("done").
+                let done = status_t.lock().await.state == "done";
+                if !done {
+                    set_state(&app_t, &status_t, "stopped", None).await;
+                    emit_log(&app_t, &session_t, &id_t, "info", "stopped", None, None);
+                }
             }
             Err(e) => {
                 emit_log(&app_t, &session_t, &id_t, "error", "fatal", None, Some(e.clone()));
@@ -1570,6 +1843,7 @@ async fn unless_stopped<T>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_mirror(
     app: AppHandle,
     session_id: String,
@@ -1578,8 +1852,11 @@ async fn run_mirror(
     spec: MirrorSpec,
     status: Arc<Mutex<MirrorStatus>>,
     mut stop_rx: oneshot::Receiver<()>,
+    once: bool,
 ) -> Result<(), String> {
     let local_root = PathBuf::from(&spec.local);
+    let direction = Direction::of(&spec)?;
+    let filter = Filter::new(&spec)?;
     // Shared so the parallel transfer pool can hold references concurrently.
     // SftpSession is internally async-safe — concurrent ops multiplex over
     // request IDs on the same channel.
@@ -1602,12 +1879,13 @@ async fn run_mirror(
     // all wait for this worker.
     let scan = async {
         let mut tree = RemoteTree { coarse_times, ..RemoteTree::default() };
-        walk_remote(&*sftp, &spec.remote, &spec.remote, &spec.excludes,
-                    &mut tree, &mut scanned, &mut remote_dirs, true).await?;
-        walk_local(&local_root, &local_root, &spec.remote, &spec.excludes,
-                   &*sftp, &spec.conflict_resolution, &tree,
-                   &mut work, &mut total, &mut seen, &mut scanned, &mut local_dirs, true).await?;
-        remote_only(&tree, &seen, &mut work, &mut total);
+        walk_remote(&*sftp, &spec.remote, &spec.remote, &filter,
+                    &mut tree, &mut scanned, &mut remote_dirs, direction.tidy()).await?;
+        walk_local(&local_root, &local_root, &spec.remote, &filter,
+                   &*sftp, direction.conflict_mode(&spec), &tree,
+                   &mut work, &mut total, &mut seen, &mut scanned, &mut local_dirs, direction.tidy()).await?;
+        remote_only(&tree, &filter, &seen, &mut work, &mut total);
+        one_way(direction, &mut work, &mut total);
         Ok::<(), String>(())
     };
     match unless_stopped(&mut stop_rx, scan).await {
@@ -1617,17 +1895,15 @@ async fn run_mirror(
     // Folders, empty ones too, end up on both sides: one with files would
     // come with its first file anyway, an empty one only this way (the
     // watcher does the same for a folder made while it runs).
-    let local_set: HashSet<&String> = local_dirs.iter().collect();
-    for rel in &local_dirs {
-        if remote_dirs.contains(rel) { continue; }
+    let (up, down) = folders_to_make(direction, &filter, &local_dirs, &remote_dirs);
+    for rel in up {
         let local_path = local_root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
         let Some(remote) = local_to_remote(&local_path, &local_root, &spec.remote) else { continue };
         if let Err(e) = sftp_mkdir_p(&sftp, &remote).await {
             emit_log(&app, &session_id, &mirror_id, "warn", "mkdir-fail", Some(rel.clone()), Some(e));
         }
     }
-    for rel in &remote_dirs {
-        if local_set.contains(rel) { continue; }
+    for rel in down {
         let local_path = local_root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
         if let Err(e) = tokio::fs::create_dir_all(&local_path).await {
             emit_log(&app, &session_id, &mirror_id, "warn", "mkdir-fail", Some(rel.clone()), Some(e.to_string()));
@@ -1700,6 +1976,7 @@ async fn run_mirror(
                     {
                         let mut s = status.lock().await;
                         s.transfer_done = s.transfer_done.saturating_add(1);
+                        s.failed = s.failed.saturating_add(1);
                     }
                     emit_update(&app, &status.lock().await.clone()).await;
                     emit_log(&app, &session_id, &mirror_id, "error",
@@ -1731,6 +2008,7 @@ async fn run_mirror(
                     {
                         let mut s = status.lock().await;
                         s.transfer_done = s.transfer_done.saturating_add(1);
+                        s.failed = s.failed.saturating_add(1);
                     }
                     emit_update(&app, &status.lock().await.clone()).await;
                     emit_log(&app, &session_id, &mirror_id, "error",
@@ -1741,6 +2019,16 @@ async fn run_mirror(
             // Refill the slot the finished task vacated.
             if let Some(e) = iter.next() { spawn_one(&mut set, e); }
         }
+    }
+
+    if once {
+        let summary = {
+            let s = status.lock().await;
+            format!("{} downloaded, {} uploaded, {} failed", s.downloaded, s.uploaded, s.failed)
+        };
+        set_state(&app, &status, "done", None).await;
+        emit_log(&app, &session_id, &mirror_id, "info", "done", None, Some(summary));
+        return Ok(());
     }
 
     // --- Watcher phase ---
@@ -1832,7 +2120,7 @@ async fn run_mirror(
                 // An entry that is in this batch itself gets its turn here.
                 let in_batch: HashSet<PathBuf> = paths.iter().cloned().collect();
                 for path in paths {
-                    let mut found = match process_event(&app, &session_id, &mirror_id, &local_root, &spec,
+                    let mut found = match process_event(&app, &session_id, &mirror_id, &local_root, &spec, &filter,
                                                         &sftp, &status, &path).await {
                         Ok(found) => found,
                         Err(e) => {
@@ -1852,7 +2140,7 @@ async fn run_mirror(
             _ = std::future::ready(()), if !backlog.is_empty() => {
                 for _ in 0..BACKLOG_AT_ONCE {
                     let Some(path) = backlog.pop_front() else { break };
-                    let found = match process_event(&app, &session_id, &mirror_id, &local_root, &spec,
+                    let found = match process_event(&app, &session_id, &mirror_id, &local_root, &spec, &filter,
                                                     &sftp, &status, &path).await {
                         Ok(found) => found,
                         Err(e) => {
@@ -1900,6 +2188,18 @@ async fn dir_entries(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Whether a path that is gone here goes on the server too, by what the
+/// server has there (`is_dir`; `None`: a link, an entry of no type, or no
+/// answer). Only what the mirror takes: what it skips, or what "Only these"
+/// doesn't take, was never its to copy, so it isn't its to delete. Not knowing
+/// which it is, it goes by the narrower "Only these" and the wider skips.
+fn may_delete(filter: &Filter, rel: &str, is_dir: Option<bool>) -> bool {
+    match is_dir {
+        Some(is_dir) => filter.takes(rel, is_dir),
+        None => filter.keeps(rel, false) && !filter.skips(rel, true),
+    }
+}
+
 /// Apply a single debounced FS event. Because the debouncer collapses
 /// bursts, we only care about the *current* state of the path: still
 /// present → upload (overwrites), gone → delete on remote.
@@ -1907,34 +2207,40 @@ async fn dir_entries(dir: &Path) -> Vec<PathBuf> {
 /// Returns more paths to handle the same way: the entries of a directory
 /// that was new to the server. An error means the mirror can't go on (the
 /// folder it mirrors is gone, see `local_root_present`).
+#[allow(clippy::too_many_arguments)]
 async fn process_event(
     app: &AppHandle,
     session_id: &str,
     mirror_id: &str,
     local_root: &Path,
     spec: &MirrorSpec,
+    filter: &Filter,
     sftp: &SftpSession,
     status: &Arc<Mutex<MirrorStatus>>,
     path: &Path,
 ) -> Result<Vec<PathBuf>, String> {
-    // Excludes — apply BEFORE we look at metadata so we don't even stat
+    // Skips — apply BEFORE we look at metadata so we don't even stat
     // huge dirs like node_modules.
     let rel = path.strip_prefix(local_root).map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
-    if rel.is_empty() || is_excluded(&rel, &spec.excludes) { return Ok(Vec::new()); }
+    if rel.is_empty() || filter.skips(&rel, false) { return Ok(Vec::new()); }
     let remote = match local_to_remote(path, local_root, &spec.remote) { Some(r) => r, None => return Ok(Vec::new()) };
 
     match tokio::fs::metadata(path).await {
         Ok(meta) if meta.is_dir() => {
             // The patterns name a directory with its "/" (`node_modules/`).
-            if is_excluded(&format!("{}/", rel), &spec.excludes) { return Ok(Vec::new()); }
+            if filter.skips(&rel, true) { return Ok(Vec::new()); }
             // On the server already: nothing to do. A change inside it comes
             // with a path of its own.
             if sftp.metadata(&remote).await.is_ok() { return Ok(Vec::new()); }
-            if let Err(e) = sftp_mkdir_p(sftp, &remote).await {
-                emit_log(app, session_id, mirror_id, "warn", "mkdir-fail",
-                         Some(rel), Some(e));
-                return Ok(Vec::new());
+            // Made there only when "Only these" takes all of it, as in the
+            // first sync. The files in it it takes make it there anyway.
+            if filter.keeps(&rel, true) {
+                if let Err(e) = sftp_mkdir_p(sftp, &remote).await {
+                    emit_log(app, session_id, mirror_id, "warn", "mkdir-fail",
+                             Some(rel), Some(e));
+                    return Ok(Vec::new());
+                }
             }
             // New to the server. A directory that was moved or renamed into
             // place is named by the watcher once, with nothing about what is
@@ -1946,11 +2252,11 @@ async fn process_event(
             let mut entries = dir_entries(path).await;
             entries.retain(|entry| {
                 let rel = entry.strip_prefix(local_root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-                !rel.is_empty() && !is_excluded(&rel, &spec.excludes)
+                !rel.is_empty() && !filter.skips(&rel, false)
             });
             return Ok(entries);
         }
-        Ok(meta) if meta.is_file() => {
+        Ok(meta) if meta.is_file() && filter.keeps(&rel, false) => {
             // The debounced FS event tells us the user JUST touched this file.
             // Any prior mtime guard here silently dropped edits under two very
             // common conditions:
@@ -1974,11 +2280,16 @@ async fn process_event(
                     emit_log(app, session_id, mirror_id, "info", "upload",
                              Some(rel), Some(format!("{} bytes", meta.len())));
                 }
-                Err(e) => emit_log(app, session_id, mirror_id, "error", "upload-fail",
-                                   Some(rel), Some(e)),
+                Err(e) => {
+                    {
+                        let mut s = status.lock().await;
+                        s.failed = s.failed.saturating_add(1);
+                    }
+                    emit_log(app, session_id, mirror_id, "error", "upload-fail", Some(rel), Some(e));
+                }
             }
         }
-        Ok(_) => { /* symlink/special — skip */ }
+        Ok(_) => { /* a file "Only these" doesn't take, a symlink/special — skip */ }
         Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Local path is gone → remove on remote (or soft-delete). ONLY
             // NotFound counts as "deleted"; every other io::ErrorKind is a
@@ -1994,6 +2305,19 @@ async fn process_event(
             if !local_root_present(local_root).await {
                 return Err(LOCAL_ROOT_GONE.into());
             }
+            // What it was went with it. What the server has there says
+            // whether the mirror takes it: a pattern may name folders only.
+            let is_dir = match sftp.symlink_metadata(&remote).await {
+                Ok(attr) => match attr.file_type() {
+                    FileType::Dir => Some(true),
+                    FileType::File => Some(false),
+                    _ => None,
+                },
+                // Nothing there to delete.
+                Err(e) if is_no_such_file(&e) => return Ok(Vec::new()),
+                Err(_) => None,
+            };
+            if !may_delete(filter, &rel, is_dir) { return Ok(Vec::new()); }
             let res = if spec.soft_delete {
                 sftp_soft_delete(sftp, &spec.remote, &remote).await
             } else {
@@ -2010,8 +2334,13 @@ async fn process_event(
                              if spec.soft_delete { "soft-delete" } else { "delete" },
                              Some(rel), None);
                 }
-                Err(e) => emit_log(app, session_id, mirror_id, "warn", "delete-fail",
-                                   Some(rel), Some(e)),
+                Err(e) => {
+                    {
+                        let mut s = status.lock().await;
+                        s.failed = s.failed.saturating_add(1);
+                    }
+                    emit_log(app, session_id, mirror_id, "warn", "delete-fail", Some(rel), Some(e));
+                }
             }
         }
         Err(e) => {
@@ -2179,6 +2508,32 @@ mod tests {
                 Some(_) | None => Err(StatusCode::NoSuchFile),
             };
             self.answer("RMDIR", &path, result)
+        }
+
+        // For reading only: a file here has nothing in it.
+        async fn open(
+            &mut self,
+            id: u32,
+            filename: String,
+            _pflags: OpenFlags,
+            _attrs: FileAttributes,
+        ) -> Result<russh_sftp::protocol::Handle, StatusCode> {
+            let result = match self.node(&filename) {
+                Some(File) => Ok(russh_sftp::protocol::Handle { id, handle: filename.clone() }),
+                Some(_) => Err(StatusCode::Failure),
+                None => Err(StatusCode::NoSuchFile),
+            };
+            self.answer("OPEN", &filename, result)
+        }
+
+        async fn read(&mut self, _id: u32, _handle: String, _offset: u64, _len: u32) -> Result<russh_sftp::protocol::Data, StatusCode> {
+            Err(StatusCode::Eof)
+        }
+
+        // The times a file is given; the tree keeps its own.
+        async fn setstat(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, StatusCode> {
+            let result = if self.node(&path).is_some() { Ok(ok(id)) } else { Err(StatusCode::NoSuchFile) };
+            self.answer("SETSTAT", &path, result)
         }
     }
 
@@ -2518,7 +2873,8 @@ mod tests {
         russh_sftp::server::run(server, Endless::default()).await;
         let sftp = SftpSession::new(client).await.unwrap();
         let (mut tree, mut scanned, mut dirs) = (RemoteTree::default(), 0, HashSet::new());
-        let walk = walk_remote(&sftp, "/srv", "/srv", &[], &mut tree, &mut scanned, &mut dirs, false);
+        let filter = Filter::default();
+        let walk = walk_remote(&sftp, "/srv", "/srv", &filter, &mut tree, &mut scanned, &mut dirs, Tidy::default());
         let err = tokio::time::timeout(Duration::from_secs(30), walk).await.expect("the walk ended").unwrap_err();
         assert_eq!(err, format!("the server's folders nest deeper than {} levels", crate::DOWNLOAD_DIR_MAX_DEPTH));
         assert_eq!(dirs.len(), crate::DOWNLOAD_DIR_MAX_DEPTH + 1);
@@ -2543,7 +2899,7 @@ mod tests {
         std::fs::write(root.join("node_modules/x/skip.txt"), b"3").unwrap();
         let lab = Lab::new(&[("/srv", Dir)], &[], &[]).await;
         let (mut out, mut total, mut seen, mut scanned, mut dirs) = (Vec::new(), 0, HashSet::new(), 0, Vec::new());
-        walk_local(&root, &root, "/srv", &[], &lab.sftp, "local", &RemoteTree::default(), &mut out, &mut total, &mut seen, &mut scanned, &mut dirs, false)
+        walk_local(&root, &root, "/srv", &Filter::default(), &lab.sftp, "local", &RemoteTree::default(), &mut out, &mut total, &mut seen, &mut scanned, &mut dirs, Tidy::default())
             .await
             .unwrap();
         std::fs::remove_dir_all(&root).unwrap();
@@ -2563,14 +2919,36 @@ mod tests {
     }
 
     async fn scan_of(lab: &Lab, root: &Path, remote: &str, settle: bool) -> Vec<(String, String)> {
+        let spec = spec_with(&[], &[], "both");
+        scan_spec(lab, root, remote, &spec, Tidy { here: settle, there: settle }).await
+    }
+
+    /// A mirror of /srv with these patterns, this way.
+    fn spec_with(includes: &[&str], excludes: &[&str], direction: &str) -> MirrorSpec {
+        let list = |patterns: &[&str]| patterns.iter().map(|p| p.to_string()).collect();
+        MirrorSpec {
+            local: String::new(),
+            remote: "/srv".into(),
+            soft_delete: true,
+            excludes: list(excludes),
+            includes: list(includes),
+            direction: direction.into(),
+            conflict_resolution: "local".into(),
+        }
+    }
+
+    /// What both walks would move for `spec`, as a run of it does.
+    async fn scan_spec(lab: &Lab, root: &Path, remote: &str, spec: &MirrorSpec, tidy: Tidy) -> Vec<(String, String)> {
+        let (filter, direction) = (Filter::new(spec).unwrap(), Direction::of(spec).unwrap());
         let (mut out, mut total, mut seen, mut scanned, mut tree) = (Vec::new(), 0, HashSet::new(), 0, RemoteTree::default());
-        walk_remote(&lab.sftp, remote, remote, &[], &mut tree, &mut scanned, &mut HashSet::new(), settle)
+        walk_remote(&lab.sftp, remote, remote, &filter, &mut tree, &mut scanned, &mut HashSet::new(), tidy)
             .await
             .unwrap();
-        walk_local(root, root, remote, &[], &lab.sftp, "local", &tree, &mut out, &mut total, &mut seen, &mut scanned, &mut Vec::new(), settle)
+        walk_local(root, root, remote, &filter, &lab.sftp, direction.conflict_mode(spec), &tree, &mut out, &mut total, &mut seen, &mut scanned, &mut Vec::new(), tidy)
             .await
             .unwrap();
-        remote_only(&tree, &seen, &mut out, &mut total);
+        remote_only(&tree, &filter, &seen, &mut out, &mut total);
+        one_way(direction, &mut out, &mut total);
         let mut found: Vec<(String, String)> = out.into_iter().map(|e| (e.path, e.action)).collect();
         found.sort();
         found
@@ -2741,7 +3119,7 @@ mod tests {
     // file of the user's, on either side, and a real start clears it away.
     #[tokio::test]
     async fn what_a_cut_transfer_left_never_moves_and_is_cleared_away() {
-        assert!(is_excluded("a/b.txt.submarine-tmp", &[]));
+        assert!(Filter::default().skips("a/b.txt.submarine-tmp", false));
         let root = std::env::temp_dir().join(format!("sub-mirror-left-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("mine.txt"), b"1").unwrap();
@@ -2783,6 +3161,7 @@ mod tests {
             session_id: "s".into(),
             local: String::new(),
             remote: String::new(),
+            direction: "both".into(),
             state: "scanning".into(),
             queue_depth: 0,
             uploaded: 0,
@@ -2791,6 +3170,8 @@ mod tests {
             scanned: 0,
             transfer_total: 0,
             transfer_done: 0,
+            failed: 0,
+            once: false,
             last_event_ms: 0,
             error: None,
         };
@@ -2846,5 +3227,300 @@ mod tests {
         let err = sftp_download_file(&lab.sftp, "/srv/x.desktop", &local, None).await.unwrap_err();
         assert!(err.contains("auto-run"), "{}", err);
         assert!(!root.exists());
+    }
+
+    fn hits(pattern: &str, rel: &str, is_dir: bool) -> bool {
+        Pattern::new(pattern).unwrap().unwrap().hits(rel, is_dir)
+    }
+
+    #[test]
+    fn a_glob_names_a_name_anywhere_or_a_path_from_the_top() {
+        // Without a "/": any name in the path.
+        assert!(hits("*.sql", "db.sql", false));
+        assert!(hits("*.sql", "a/b/db.sql", false));
+        assert!(!hits("*.sql", "db.sql.gz", false));
+        assert!(!hits("*.sql", "db.sqlx", false));
+        // A folder it names comes with all that is in it.
+        assert!(hits("cache*", "app/cache-1/x.txt", false));
+        // `?` is one character of a name.
+        assert!(hits("v?.txt", "v1.txt", false));
+        assert!(!hits("v?.txt", "v10.txt", false));
+        assert!(!hits("a?b", "a/b", false));
+        // With a "/": the path from the top folder. A "/" in front changes nothing.
+        assert!(hits("backups/*.sql", "backups/a.sql", false));
+        assert!(!hits("backups/*.sql", "old/backups/a.sql", false));
+        assert!(!hits("backups/*.sql", "backups/x/a.sql", false));
+        assert!(hits("/backups/*.sql", "backups/a.sql", false));
+        assert!(hits("backups/*", "backups/x/a.sql", false), "a folder it names");
+        // `**` is any number of folders, none too.
+        assert!(hits("backups/**/*.sql", "backups/a.sql", false));
+        assert!(hits("backups/**/*.sql", "backups/x/y/a.sql", false));
+        assert!(!hits("backups/**/*.sql", "other/x/a.sql", false));
+        assert!(hits("**/logs/*", "logs/a", false));
+        assert!(hits("**/logs/*", "srv/app/logs/a", false));
+        assert!(!hits("**/logs/*", "srv/app/mylogs/a", false));
+        assert!(hits("src/**.rs", "src/a/b.rs", false));
+        assert!(!hits("src/**.rs", "lib/a.rs", false));
+        // A "/" at the end: folders only.
+        assert!(hits("tmp*/", "tmp1", true));
+        assert!(hits("tmp*/", "tmp1/a.txt", false));
+        assert!(!hits("tmp*/", "tmp1", false));
+        // Other characters are themselves, and a "\" is a "/".
+        assert!(hits("a+b (1)*.txt", "a+b (1) copy.txt", false));
+        assert!(!hits("a.b*", "axb", false));
+        assert!(hits("backups\\*.sql", "backups/a.sql", false));
+    }
+
+    #[test]
+    fn a_pattern_without_wildcards_is_found_anywhere_in_the_path() {
+        assert!(hits("secret", "a/my-secret.txt", false));
+        assert!(hits("build/", "build", true));
+        assert!(hits("build/", "src/build/x.o", false));
+        assert!(!hits("build/", "build", false), "a file of that name");
+        assert!(hits("/build/", "build/x.o", false));
+        assert!(!hits("/build/", "mybuild/x.o", false));
+        assert!(Pattern::new("  ").unwrap().is_none());
+    }
+
+    #[test]
+    fn every_mirror_skips_version_control_packages_and_leftovers() {
+        let filter = Filter::default();
+        for (rel, is_dir) in [
+            (".git", true),
+            ("a/.git/config", false),
+            ("node_modules", true),
+            ("web/node_modules/x/y.js", false),
+            ("a/.DS_Store", false),
+            ("Thumbs.db", false),
+            ("x.swp", false),
+            ("big.iso.part", false),
+            ("a.txt.submarine-tmp", false),
+        ] {
+            assert!(filter.skips(rel, is_dir), "{rel}");
+        }
+        for (rel, is_dir) in [(".gitignore", false), (".github", true), ("my_node_modules.txt", false), ("notes.txt", false)] {
+            assert!(!filter.skips(rel, is_dir), "{rel}");
+        }
+        // No "Only these": every file.
+        assert!(filter.keeps("any/thing.txt", false));
+    }
+
+    // A mirror saved before there were globs keeps skipping all it skipped.
+    #[test]
+    fn what_a_skip_left_out_before_it_still_leaves_out() {
+        // The skips as they were; a folder was also asked about with its "/".
+        fn before(rel: &str, is_dir: bool, pattern: &str) -> bool {
+            let one = |rel: &str| {
+                let p = pattern.trim();
+                builtin_skip(rel)
+                    || (!p.is_empty()
+                        && match p.strip_prefix("*.") {
+                            Some(ext) => rel.ends_with(&format!(".{}", ext)),
+                            None => rel.contains(p),
+                        })
+            };
+            one(rel) || (is_dir && one(&format!("{}/", rel)))
+        }
+        let patterns = ["*.log", "*.tar.gz", "*.d/", "secret", ".env", "build/", "/build", "logs/old", " cache ", "x", ""];
+        let paths = [
+            ("app.log", false),
+            ("var/app.log", false),
+            ("var/app.log.1", false),
+            ("a/b.tar.gz", false),
+            ("my-secret.txt", false),
+            ("secrets", true),
+            ("app/.env", false),
+            ("app/.env.local", false),
+            ("build", true),
+            ("src/build", true),
+            ("build/x.o", false),
+            ("mybuild", true),
+            ("src/build.rs", false),
+            ("logs/old", true),
+            ("logs/old/1.txt", false),
+            ("logs/older.txt", false),
+            ("conf.d", true),
+            ("etc/conf.d", true),
+            ("etc/conf.d/x", false),
+            ("cache", true),
+            ("deep/cache/x", false),
+            ("x", false),
+            ("y/x", true),
+            ("notes.txt", false),
+            (".git", true),
+            ("node_modules", true),
+            ("a.swp", false),
+        ];
+        let mut skipped = 0;
+        for pattern in patterns {
+            let filter = Filter::new(&spec_with(&[], &[pattern], "both")).unwrap();
+            for (rel, is_dir) in paths {
+                if before(rel, is_dir, pattern) {
+                    skipped += 1;
+                    assert!(filter.skips(rel, is_dir), "{pattern:?} {rel}");
+                }
+            }
+        }
+        assert!(skipped > 40, "{skipped}");
+    }
+
+    #[test]
+    fn a_direction_is_read_and_one_not_known_is_refused() {
+        let of = |direction: &str| Direction::of(&spec_with(&[], &[], direction));
+        assert_eq!(of("both"), Ok(Direction::Both));
+        assert_eq!(of(""), Ok(Direction::Both));
+        assert_eq!(of("download"), Ok(Direction::Download));
+        assert_eq!(of("upload"), Ok(Direction::Upload));
+        assert!(of("sideways").is_err());
+        // A mirror saved before there were directions copies both ways.
+        let saved: MirrorSpec = serde_json::from_str(r#"{"local":"/a","remote":"/b","excludes":["*.log"]}"#).unwrap();
+        assert_eq!((saved.direction.as_str(), saved.includes.len()), ("both", 0));
+        let spec = MirrorSpec { conflict_resolution: "newer".into(), ..spec_with(&[], &[], "both") };
+        assert_eq!(Direction::Both.conflict_mode(&spec), "newer");
+        assert_eq!(Direction::Download.conflict_mode(&spec), "remote");
+        assert_eq!(Direction::Upload.conflict_mode(&spec), "local");
+    }
+
+    #[test]
+    fn one_way_leaves_the_moves_that_go_that_way() {
+        let entry = |path: &str, size: u64, action: &str| DryRunEntry { path: path.into(), size, action: action.into() };
+        let after = |direction| {
+            let mut moves = vec![
+                entry("a", 1, "upload-new"),
+                entry("b", 10, "download-modified"),
+                entry("c", 100, "download-new"),
+                entry("d", 1000, "upload-modified"),
+            ];
+            let mut total = 1111;
+            one_way(direction, &mut moves, &mut total);
+            (moves.into_iter().map(|e| e.path).collect::<String>(), total)
+        };
+        assert_eq!(after(Direction::Both), ("abcd".to_string(), 1111));
+        assert_eq!(after(Direction::Download), ("bc".to_string(), 110));
+        assert_eq!(after(Direction::Upload), ("ad".to_string(), 1001));
+    }
+
+    // A backup of a server folder's .sql files less an old one, and the same
+    // mirror the other ways.
+    #[tokio::test]
+    async fn a_scan_takes_what_the_patterns_name_the_mirror_s_way() {
+        let lab = Lab::new(
+            &[
+                ("/srv", Dir),
+                ("/srv/db", Dir),
+                ("/srv/db/same.sql", File),
+                ("/srv/db/theirs.sql", File),
+                ("/srv/db/both.sql", File),
+                ("/srv/db/old", Dir),
+                ("/srv/db/old/skipped.sql", File),
+                ("/srv/readme.md", File),
+                ("/srv/link", Link),
+            ],
+            &[("/srv/link", "/srv/db")],
+            &[],
+        )
+        .await;
+        for (direction, expected) in [
+            ("both", vec![moved("db/both.sql", "upload-modified"), moved("db/mine.sql", "upload-new"), moved("db/theirs.sql", "download-new")]),
+            ("download", vec![moved("db/both.sql", "download-modified"), moved("db/theirs.sql", "download-new")]),
+            ("upload", vec![moved("db/both.sql", "upload-modified"), moved("db/mine.sql", "upload-new")]),
+        ] {
+            let root = scan_root("only");
+            as_on_the_server(&root, "db/same.sql");
+            std::fs::write(root.join("db/mine.sql"), b"1").unwrap();
+            // Bigger and newer here: the side the mirror copies from wins.
+            std::fs::write(root.join("db/both.sql"), b"22").unwrap();
+            std::fs::write(root.join("notes.txt"), b"1").unwrap();
+            std::fs::create_dir_all(root.join("db/old")).unwrap();
+            std::fs::write(root.join("db/old/mine.sql"), b"1").unwrap();
+            let spec = spec_with(&["*.sql"], &["old/"], direction);
+            let found = scan_spec(&lab, &root, "/srv", &spec, Tidy::default()).await;
+            std::fs::remove_dir_all(&root).unwrap();
+            assert_eq!(found, expected, "{direction}");
+        }
+        // Not even the link "Only these" doesn't take was asked about.
+        assert!(lab.stats().is_empty(), "{:?}", lab.stats());
+    }
+
+    // The same content with two times: a run gives the copy on the side it
+    // writes to the other's time, so it isn't hashed again; a preview neither.
+    #[tokio::test]
+    async fn the_same_file_gets_one_time_only_where_a_run_writes() {
+        for (direction, tidy, there, here) in [
+            ("both", Tidy::default(), false, false),
+            ("both", Direction::Both.tidy(), true, false),
+            ("upload", Direction::Upload.tidy(), true, false),
+            ("download", Direction::Download.tidy(), false, true),
+        ] {
+            let root = scan_root("times");
+            // Empty, as on the server, but from now and not then.
+            std::fs::write(root.join("same.txt"), b"").unwrap();
+            let lab = Lab::new(&[("/srv", Dir), ("/srv/same.txt", File)], &[], &[]).await;
+            let found = scan_spec(&lab, &root, "/srv", &spec_with(&[], &[], direction), tidy).await;
+            let time = filetime::FileTime::from_last_modification_time(&std::fs::metadata(root.join("same.txt")).unwrap());
+            std::fs::remove_dir_all(&root).unwrap();
+            let log = lab.log();
+            assert!(found.is_empty(), "{direction}: {found:?}");
+            assert!(log.iter().any(|line| line == "OPEN /srv/same.txt"), "{direction}: hashed {log:?}");
+            assert_eq!(log.iter().any(|line| line == "SETSTAT /srv/same.txt"), there, "{direction}: {log:?}");
+            assert_eq!(time.unix_seconds() == i64::from(SERVER_TIME), here, "{direction}");
+        }
+    }
+
+    // What a cut copy left goes only where the run writes.
+    #[tokio::test]
+    async fn a_one_way_run_clears_leftovers_only_where_it_writes() {
+        for (direction, here, there) in [("download", true, false), ("upload", false, true)] {
+            let root = scan_root("cut");
+            let cut_down = root.join("cut.txt.submarine-tmp");
+            std::fs::write(&cut_down, b"part").unwrap();
+            let cut_up = "/srv/up.txt.submarine-tmp";
+            let lab = Lab::new(&[("/srv", Dir), (cut_up, File)], &[], &[]).await;
+            let spec = spec_with(&[], &[], direction);
+            let found = scan_spec(&lab, &root, "/srv", &spec, Direction::of(&spec).unwrap().tidy()).await;
+            let cleared_here = !cut_down.exists();
+            std::fs::remove_dir_all(&root).unwrap();
+            assert!(found.is_empty(), "{direction}: {found:?}");
+            assert_eq!(cleared_here, here, "{direction}: here");
+            assert_eq!(!lab.left().iter().any(|path| path == cut_up), there, "{direction}: there");
+        }
+    }
+
+    #[test]
+    fn the_first_sync_makes_folders_where_it_writes_and_of_what_it_takes() {
+        let local: Vec<String> = ["only-here", "only-here/deep", "both", "sql-dumps"].map(String::from).to_vec();
+        let remote: HashSet<String> = ["only-there", "both", "sql-there"].map(String::from).into_iter().collect();
+        let make = |direction: &str, includes: &[&str]| {
+            let spec = spec_with(includes, &[], direction);
+            let (up, down) = folders_to_make(Direction::of(&spec).unwrap(), &Filter::new(&spec).unwrap(), &local, &remote);
+            (up.into_iter().map(String::as_str).collect::<Vec<_>>(), down.into_iter().map(String::as_str).collect::<Vec<_>>())
+        };
+        assert_eq!(make("both", &[]), (vec!["only-here", "only-here/deep", "sql-dumps"], vec!["only-there", "sql-there"]));
+        assert_eq!(make("download", &[]), (vec![], vec!["only-there", "sql-there"]));
+        assert_eq!(make("upload", &[]), (vec!["only-here", "only-here/deep", "sql-dumps"], vec![]));
+        assert_eq!(make("both", &["sql*/"]), (vec!["sql-dumps"], vec!["sql-there"]));
+        // The files a pattern takes come with their folders; no empty ones.
+        assert_eq!(make("both", &["*.sql"]), (vec![], vec![]));
+    }
+
+    #[test]
+    fn a_path_gone_here_goes_there_only_when_the_mirror_takes_it() {
+        let none = Filter::default();
+        assert!(may_delete(&none, "a.txt", Some(false)));
+        assert!(may_delete(&none, "src", Some(true)));
+        // A packages folder was never copied, so it is never deleted (it was,
+        // as its name has no "/").
+        assert!(!may_delete(&none, "node_modules", Some(true)));
+        assert!(!may_delete(&none, "web/node_modules", None));
+        assert!(may_delete(&none, "link", None));
+        let sql = Filter::new(&spec_with(&["*.sql"], &["tmp*/"], "both")).unwrap();
+        assert!(may_delete(&sql, "db/a.sql", Some(false)));
+        assert!(!may_delete(&sql, "db", Some(true)), "a folder that may hold other files");
+        assert!(!may_delete(&sql, "notes.txt", Some(false)));
+        assert!(!may_delete(&sql, "tmp1", Some(true)));
+        assert!(!may_delete(&sql, "tmp1/a.sql", Some(false)));
+        // Not knowing what it is: taken as a file, and not skipped as a folder.
+        assert!(may_delete(&sql, "x.sql", None));
+        assert!(!may_delete(&sql, "tmp2.sql", None));
     }
 }

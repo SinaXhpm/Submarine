@@ -33,6 +33,9 @@ export function normalizeMirror(m: any): any {
     local: typeof m.local === "string" ? m.local : "",
     remote: typeof m.remote === "string" ? m.remote : "",
     excludes: Array.isArray(m.excludes) ? m.excludes.filter((s: unknown) => typeof s === "string") : [],
+    includes: Array.isArray(m.includes) ? m.includes.filter((s: unknown) => typeof s === "string") : [],
+    // A row from before directions copies both ways, as mirrors did then.
+    direction: typeof m.direction === "string" ? m.direction : "both",
     conflict_resolution: typeof m.conflict_resolution === "string" ? m.conflict_resolution : "local",
   };
 }

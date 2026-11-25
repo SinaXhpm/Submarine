@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
-  Plus, X, RefreshCw, AlertTriangle, FolderUp, ArrowRight, Square,
+  Plus, X, RefreshCw, AlertTriangle, FolderUp, ArrowRight, ArrowLeft, ArrowLeftRight, Square,
   FolderOpen, FileText, Trash2, Pause, Play, Check
 } from "lucide-react";
 import { IS_ANDROID, IS_MOBILE } from "../util/platform";
@@ -10,31 +10,58 @@ import { normalizeMirror, serverRowChanged } from "../util/serverJson";
 import { tk, tx, useT } from "../i18n";
 import { sentenceGap } from "../util/sentences";
 
-// One-way local → remote folder mirror panel. Lives next to SFTP / Tunnels /
-// CMDS inside a session. The configured mirror pairs are stored on the node
-// row (server.mirrors JSON), so they roam with the encrypted profile. The
-// panel lets the user (1) configure pairs, (2) preview what an initial
-// sync would push, (3) start / stop the live watcher, and (4) read a
-// rolling log of upload / delete / error events as the watcher fires.
+// Folder mirror panel. Lives next to SFTP / Tunnels / CMDS inside a session.
+// The configured mirror pairs are stored on the node row (server.mirrors
+// JSON), so they roam with the encrypted profile. The panel lets the user
+// (1) configure pairs, (2) preview what the first sync would copy, (3) run
+// it once or start / stop the live watcher, and (4) read a rolling log of
+// upload / delete / error events as the watcher fires.
 
 type ConflictMode = "local" | "remote" | "newer";
+
+// Which way files go (mirror.rs `MirrorSpec::direction`). From the server to
+// this device a mirror runs once only: nothing tells it about changes there.
+type Direction = "both" | "download" | "upload";
 
 interface MirrorSpec {
   local: string;
   remote: string;
   soft_delete: boolean;
+  // "Skip these" and "Only these": patterns (*.sql, db/) or words in a path.
   excludes: string[];
+  includes: string[];
+  direction: Direction;
   // Initial-sync collision rule. "local" matches rsync's source-wins default
   // and is what most users expect for a tool literally called "mirror".
+  // Both ways only: one way, the side it copies from wins.
   conflict_resolution: ConflictMode;
 }
+
+const BLANK_MIRROR: MirrorSpec = {
+  local: "", remote: "", soft_delete: true, excludes: [], includes: [], direction: "both", conflict_resolution: "local",
+};
+
+// The arrow between a mirror's two folders, this device's first.
+function DirectionArrow({ direction, size = 11, className }: { direction: string; size?: number; className?: string }) {
+  const Icon = direction === "download" ? ArrowLeft : direction === "upload" ? ArrowRight : ArrowLeftRight;
+  return <Icon size={size} className={className} />;
+}
+const arrowText = (direction: string) => (direction === "download" ? "←" : direction === "upload" ? "→" : "↔");
+
+// A mirror that got to its end, or failed: it is gone from the backend, so
+// its card can only be cleared.
+const ended = (s: MirrorStatus) => s.state === "done" || s.state === "error";
+// How long the card of a run that is done stays. An error's card stays until
+// it is dismissed.
+const DONE_CARD_MS = 10_000;
 
 interface MirrorStatus {
   id: string;
   session_id: string;
   local: string;
   remote: string;
-  state: string;       // "starting" | "scanning" | "initial-sync" | "watching" | "error" | "stopped"
+  direction: string;
+  state: string;       // "starting" | "scanning" | "initial-sync" | "watching" | "done" | "error" | "stopped"
   queue_depth: number;
   uploaded: number;
   downloaded: number;
@@ -42,6 +69,8 @@ interface MirrorStatus {
   scanned: number;
   transfer_total: number;
   transfer_done: number;
+  failed: number;      // copies and deletes that failed (the log says why)
+  once: boolean;       // the first sync alone, ending as "done"
   last_event_ms: number;
   error?: string;
 }
@@ -78,7 +107,7 @@ const LOG_CAP = 200;
 // A mirror's state word, as shown; the values are compared where they come in.
 const STATE_LABEL: Record<string, string> = {
   starting: tk("starting"), scanning: tk("scanning"), "initial-sync": tk("initial-sync"),
-  watching: tk("watching"), error: tk("error"), stopped: tk("stopped"),
+  watching: tk("watching"), done: tk("done"), error: tk("error"), stopped: tk("stopped"),
 };
 
 // Shared status row used by every mirror card (saved + ad-hoc). Renders the
@@ -87,7 +116,8 @@ const STATE_LABEL: Record<string, string> = {
 function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
   const t = useT();
   const stateBadge =
-    live.state === "watching"     ? "bg-emerald-500/15 text-emerald-300" :
+    live.state === "watching" ||
+    live.state === "done"         ? "bg-emerald-500/15 text-emerald-300" :
     live.state === "initial-sync" ? "bg-indigo-500/15 text-indigo-300"   :
     live.state === "scanning"     ? "bg-sky-500/15 text-sky-300"         :
     live.state === "error"        ? "bg-rose-500/15 text-rose-300"       :
@@ -108,6 +138,7 @@ function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
         <span>↑ {live.uploaded}</span>
         <span>↓ {live.downloaded}</span>
         <span>✗ {live.deleted}</span>
+        {live.failed > 0 && <span className="text-rose-400">{t("failed {count}", { count: live.failed })}</span>}
         {live.queue_depth > 0 && <span className="text-amber-300">{t("queue {count}", { count: live.queue_depth })}</span>}
         {live.error && <span className="text-rose-400 truncate" title={live.error}>· {live.error}</span>}
       </div>
@@ -126,8 +157,9 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
   const [logs, setLogs] = useState<MirrorLogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState<MirrorSpec>({ local: "", remote: "", soft_delete: true, excludes: [], conflict_resolution: "local" });
+  const [draft, setDraft] = useState<MirrorSpec>(BLANK_MIRROR);
   const [excludesText, setExcludesText] = useState("");
+  const [includesText, setIncludesText] = useState("");
   // Mirrors saved into the profile *during this session* — kept here so the
   // "Saved on this node" group lights up immediately without waiting for the
   // user to close + reopen the session for the props-level configuredMirrors
@@ -183,7 +215,13 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
           const { [s.id]: _, ...rest } = prev;
           return rest;
         }
-        return { ...prev, [s.id]: s };
+        // A new run of a pair takes the place of the card its last run left.
+        const next: Record<string, MirrorStatus> = {};
+        for (const [id, o] of Object.entries(prev)) {
+          if (id === s.id || !ended(o) || o.local !== s.local || o.remote !== s.remote) next[id] = o;
+        }
+        next[s.id] = s;
+        return next;
       });
       if (s.state === "stopped") {
         setRunningByPair((prev) => {
@@ -249,11 +287,12 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
     }
   };
 
-  const confirmStart = async () => {
+  // `once`: the first sync alone, with no watcher after it.
+  const confirmStart = async (once: boolean) => {
     if (!pending || working) return;
     setWorking(true); setError(null);
     try {
-      await invoke("start_mirror", { sessionId, spec: pending.spec });
+      await invoke("start_mirror", { sessionId, spec: pending.spec, once });
       // Persist into the saved-node row (serverId > 0 means this isn't a
       // quick-connect; backend coalesces by local|remote so re-saving an
       // existing pair just updates its excludes/conflict mode in place).
@@ -279,8 +318,9 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       // user wants to see while initial sync runs.
       setPending(null);
       setAdding(false);
-      setDraft({ local: "", remote: "", soft_delete: true, excludes: [], conflict_resolution: "local" });
+      setDraft(BLANK_MIRROR);
       setExcludesText("");
+      setIncludesText("");
     } catch (e: any) {
       setError(String(e));
     } finally {
@@ -294,6 +334,32 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
     catch (e: any) { setError(String(e)); }
   };
 
+  // The card of a mirror that ended: there is nothing to stop.
+  const clearEnded = (live: MirrorStatus) => {
+    setStatuses(({ [live.id]: _, ...rest }) => rest);
+    setRunningByPair((prev) => {
+      const key = `${live.local}|${live.remote}`;
+      if (prev[key] !== live.id) return prev;
+      const { [key]: _, ...rest } = prev;
+      return rest;
+    });
+  };
+
+  // A card that is done clears itself after a while (one timer per run).
+  const doneTimers = useRef(new Map<string, number>());
+  useEffect(() => {
+    const timers = doneTimers.current;
+    for (const s of Object.values(statuses)) {
+      if (s.state !== "done" || timers.has(s.id)) continue;
+      timers.set(s.id, window.setTimeout(() => { timers.delete(s.id); clearEnded(s); }, DONE_CARD_MS));
+    }
+  }, [statuses]);
+  useEffect(() => () => {
+    const timers = doneTimers.current;
+    timers.forEach((timer) => window.clearTimeout(timer));
+    timers.clear();
+  }, []);
+
   const fmtBytes = (n: number) => {
     if (n < 1024) return `${n} B`;
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -305,10 +371,12 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
     const local = draft.local.trim();
     const remote = draft.remote.trim();
     if (!local || !remote) { setError(t("Local and remote paths are required.")); return; }
-    const excludes = excludesText
-      .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    askPreviewThenStart({ ...draft, local, remote, excludes });
+    const lines = (text: string) => text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    askPreviewThenStart({ ...draft, local, remote, excludes: lines(excludesText), includes: lines(includesText) });
   };
+
+  const patternHelp = t("A name with * or ? is a pattern (*.sql, v?.txt). With a / it starts at the mirrored folder (db/*.sql), and a / at the end means folders only (cache/). Other text is found anywhere in the path.");
+  const runningCount = Object.values(statuses).filter((s) => !ended(s)).length;
 
   return (
     <div className="flex-1 flex flex-col h-full bg-shade-09090b overflow-hidden relative">
@@ -324,7 +392,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       <div className="shrink-0 px-3 py-2 flex items-center justify-between border-b border-white/5 bg-shade-121214">
         <div className="flex items-center gap-2 text-[11px] font-semibold text-zinc-400">
           <FolderUp size={12} />
-          <span>{t("{running} running · {saved} saved", { running: Object.keys(statuses).length, saved: allSavedMirrors.length })}</span>
+          <span>{t("{running} running · {saved} saved", { running: runningCount, saved: allSavedMirrors.length })}</span>
         </div>
         <button
           onClick={() => { setAdding((a) => !a); setError(null); }}
@@ -372,7 +440,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             />
           </div>
           <div className="flex items-center gap-2">
-            <ArrowRight size={12} className="text-zinc-500 shrink-0 ml-[58px]" />
+            <DirectionArrow direction={draft.direction} size={12} className="text-zinc-500 shrink-0 ml-[58px]" />
             <input
               value={draft.remote}
               onChange={(e) => setDraft({ ...draft, remote: e.target.value })}
@@ -380,40 +448,66 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               className="flex-1 min-w-0 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-200"
             />
           </div>
+          <div className="flex items-center gap-2 text-[10.5px] text-zinc-400">
+            <span className="shrink-0 font-semibold text-zinc-500 text-[11px]">{t("Direction")}</span>
+            <select
+              value={draft.direction}
+              onChange={(e) => setDraft({ ...draft, direction: e.target.value as Direction })}
+              className="h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-200 outline-none focus:border-primary/40"
+            >
+              <option value="both">{t("Both ways")}</option>
+              <option value="download">{t("Server → this device (once)")}</option>
+              <option value="upload">{t("This device → server")}</option>
+            </select>
+          </div>
           <textarea
-            value={excludesText}
-            onChange={(e) => setExcludesText(e.target.value)}
-            placeholder={t("Excludes (one per line) — substring or *.ext")}
+            value={includesText}
+            onChange={(e) => setIncludesText(e.target.value)}
+            placeholder={t("Only these, one per line (e.g. *.sql). Empty: every file.")}
+            title={patternHelp}
             rows={2}
             className="w-full p-2 bg-white/[0.04] border border-white/10 rounded text-[10.5px] font-mono text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:border-primary/40"
           />
-          <div className="flex items-center gap-2 text-[10.5px] text-zinc-400">
-            <span className="shrink-0 font-semibold text-zinc-500 text-[11px]">{t("On conflict")}</span>
-            <select
-              value={draft.conflict_resolution}
-              onChange={(e) => setDraft({ ...draft, conflict_resolution: e.target.value as ConflictMode })}
-              className="h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-200 outline-none focus:border-primary/40"
-              title={t("Decides which side wins when a file exists on both sides with different content. Missing-on-one-side files always copy across regardless.")}
-            >
-              <option value="local">{t("Local wins (overwrite remote)")}</option>
-              <option value="remote">{t("Remote wins (overwrite local)")}</option>
-              <option value="newer">{t("Newer mtime wins")}</option>
-            </select>
-          </div>
+          <textarea
+            value={excludesText}
+            onChange={(e) => setExcludesText(e.target.value)}
+            placeholder={t("Skip these, one per line (e.g. *.log, cache/ or a word in the path)")}
+            title={patternHelp}
+            rows={2}
+            className="w-full p-2 bg-white/[0.04] border border-white/10 rounded text-[10.5px] font-mono text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:border-primary/40"
+          />
+          {draft.direction === "both" && (
+            <div className="flex items-center gap-2 text-[10.5px] text-zinc-400">
+              <span className="shrink-0 font-semibold text-zinc-500 text-[11px]">{t("On conflict")}</span>
+              <select
+                value={draft.conflict_resolution}
+                onChange={(e) => setDraft({ ...draft, conflict_resolution: e.target.value as ConflictMode })}
+                className="h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-200 outline-none focus:border-primary/40"
+                title={t("Decides which side wins when a file exists on both sides with different content. Missing-on-one-side files always copy across regardless.")}
+              >
+                <option value="local">{t("Local wins (overwrite remote)")}</option>
+                <option value="remote">{t("Remote wins (overwrite local)")}</option>
+                <option value="newer">{t("Newer mtime wins")}</option>
+              </select>
+            </div>
+          )}
           <div className="flex items-center justify-between gap-2">
-            <label className="flex items-center gap-2 text-[10.5px] text-zinc-400 select-none">
-              <input
-                type="checkbox"
-                checked={draft.soft_delete}
-                onChange={(e) => setDraft({ ...draft, soft_delete: e.target.checked })}
-                className="accent-primary"
-              />
-              <span>{tx("Soft delete (move to {trash} instead of removing)", { trash: <span className="font-mono text-zinc-300">.submarine-trash</span> })}</span>
-            </label>
+            {/* Only the live mirror deletes: one from the server runs once. */}
+            {draft.direction !== "download" && (
+              <label className="flex items-center gap-2 text-[10.5px] text-zinc-400 select-none">
+                <input
+                  type="checkbox"
+                  checked={draft.soft_delete}
+                  onChange={(e) => setDraft({ ...draft, soft_delete: e.target.checked })}
+                  className="accent-primary"
+                />
+                <span>{tx("Soft delete (move to {trash} instead of removing)", { trash: <span className="font-mono text-zinc-300">.submarine-trash</span> })}</span>
+              </label>
+            )}
             <button
               onClick={submitDraft}
               disabled={working}
-              className="h-7 px-3 rounded text-[11px] font-semibold bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50"
+              className="ml-auto h-7 px-3 rounded text-[11px] font-semibold bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50"
             >
               {working ? "…" : t("Continue")}
             </button>
@@ -432,6 +526,8 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
           e => e.action === "download-modified"
         ).length;
         const conflictMode = pending.spec.conflict_resolution || "local";
+        // One way, nothing here picks a side (see Direction).
+        const both = pending.spec.direction === "both";
         return (
         <div className="shrink-0 p-3 border-b border-white/5 bg-shade-0f0f12 space-y-2">
           <div className="flex items-start gap-2 text-[11px] text-zinc-300">
@@ -439,7 +535,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             <div className="min-w-0 flex-1">
               <div className="font-bold">{t("Initial sync preview")}</div>
               <div className="text-zinc-500 text-[10.5px] font-mono truncate">
-                {pending.spec.local} → {pending.spec.remote}
+                {pending.spec.local} {arrowText(pending.spec.direction)} {pending.spec.remote}
               </div>
             </div>
           </div>
@@ -451,7 +547,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               transfer. The user explicitly opted for a warning-only approach
               over re-engineering the reconciliation flow, so this is the
               single point of consent for the data-loss window. */}
-          {pending.report.entries.length > 0 && (
+          {(downloadModified > 0 || (both && pending.report.entries.length > 0)) && (
             <div className={`flex items-start gap-2 text-[10.5px] px-2.5 py-1.5 rounded border ${
               downloadModified > 0
                 ? "bg-amber-500/10 border-amber-500/30 text-amber-200"
@@ -465,7 +561,9 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                     {downloadModified === 1
                       ? tx("{count} file marked {mod} will be {overwritten} with the remote copy.", { count: downloadModified, mod: <span className="font-mono">↓ {t("mod")}</span>, overwritten: <b>{t("overwritten locally")}</b> })
                       : tx("{count} files marked {mod} will be {overwritten} with the remote copy.", { count: downloadModified, mod: <span className="font-mono">↓ {t("mod")}</span>, overwritten: <b>{t("overwritten locally")}</b> })}
-                    {sentenceGap()}{tx("If you edit any of these during the sync, your changes can be lost silently — there's no re-compare between scan and transfer. Save / close editors first, or change conflict mode (currently {mode}).", { mode: <span className="font-mono">{conflictMode}</span> })}
+                    {sentenceGap()}{both
+                      ? tx("If you edit any of these during the sync, your changes can be lost silently — there's no re-compare between scan and transfer. Save / close editors first, or change conflict mode (currently {mode}).", { mode: <span className="font-mono">{conflictMode}</span> })
+                      : t("If you edit any of these during the sync, your changes can be lost silently — there's no re-compare between scan and transfer. Save / close editors first.")}
                   </>
                 ) : (
                   <>
@@ -511,12 +609,23 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               >
                 {t("Cancel")}
               </button>
+              {/* Run once: copy what the list shows, then stop. From the
+                  server, the only way (nothing tells it about changes there). */}
+              {pending.spec.direction !== "download" && (
+                <button
+                  onClick={() => confirmStart(true)}
+                  disabled={working}
+                  className="h-7 px-3 rounded text-[11px] font-semibold bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+                >
+                  {t("Run once")}
+                </button>
+              )}
               <button
-                onClick={confirmStart}
+                onClick={() => confirmStart(pending.spec.direction === "download")}
                 disabled={working}
                 className="h-7 px-3 rounded text-[11px] font-semibold bg-primary text-black border border-primary disabled:opacity-50 flex items-center gap-1.5"
               >
-                <Check size={11} /> {t("Start mirror")}
+                <Check size={11} /> {pending.spec.direction === "download" ? t("Run once") : t("Start mirror")}
               </button>
             </div>
           </div>
@@ -540,9 +649,9 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               <div className="flex items-center gap-2">
                 <FolderUp size={12} className="text-primary shrink-0" />
                 <span className="text-zinc-300 truncate flex-1">{m.local}</span>
-                <ArrowRight size={11} className="text-zinc-500 shrink-0" />
+                <DirectionArrow direction={m.direction} className="text-zinc-500 shrink-0" />
                 <span className="text-zinc-400 truncate flex-1">{m.remote}</span>
-                {live ? (
+                {live && !ended(live) ? (
                   <button
                     onClick={() => stopMirror(live.id)}
                     title={t("Stop mirror")}
@@ -551,13 +660,24 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                     <Square size={11} />
                   </button>
                 ) : (
-                  <button
-                    onClick={() => askPreviewThenStart(m)}
-                    title={t("Start mirror")}
-                    className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-emerald-400 shrink-0"
-                  >
-                    <Play size={11} fill="currentColor" />
-                  </button>
+                  <>
+                    {live && (
+                      <button
+                        onClick={() => clearEnded(live)}
+                        title={t("Dismiss")}
+                        className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-zinc-200 shrink-0"
+                      >
+                        <X size={11} />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => askPreviewThenStart(m)}
+                      title={m.direction === "download" ? t("Run once") : t("Start mirror")}
+                      className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-emerald-400 shrink-0"
+                    >
+                      <Play size={11} fill="currentColor" />
+                    </button>
+                  </>
                 )}
               </div>
               {live && <MirrorLiveStatus live={live} />}
@@ -576,14 +696,23 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               <div className="flex items-center gap-2">
                 <FolderUp size={12} className="text-primary shrink-0" />
                 <span className="text-zinc-300 truncate flex-1">{live.local}</span>
-                <ArrowRight size={11} className="text-zinc-500 shrink-0" />
+                <DirectionArrow direction={live.direction} className="text-zinc-500 shrink-0" />
                 <span className="text-zinc-400 truncate flex-1">{live.remote}</span>
-                <button aria-label={t("Stop mirror")}
-                  onClick={() => stopMirror(live.id)}
-                  className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-rose-400 shrink-0"
-                >
-                  <Square size={11} />
-                </button>
+                {ended(live) ? (
+                  <button aria-label={t("Dismiss")}
+                    onClick={() => clearEnded(live)}
+                    className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-zinc-200 shrink-0"
+                  >
+                    <X size={11} />
+                  </button>
+                ) : (
+                  <button aria-label={t("Stop mirror")}
+                    onClick={() => stopMirror(live.id)}
+                    className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-rose-400 shrink-0"
+                  >
+                    <Square size={11} />
+                  </button>
+                )}
               </div>
               <MirrorLiveStatus live={live} />
             </div>
