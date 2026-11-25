@@ -427,7 +427,7 @@ function DesktopApp() {
     // autoOpen = open the tab without connecting (any kind of server).
     autostart: false,
     autoOpen: false,
-    mirrors: [] as { local: string, remote: string, soft_delete: boolean, excludes: string[], conflict_resolution: string }[],
+    mirrors: [] as { local: string, remote: string, soft_delete: boolean, excludes: string[], includes: string[], direction: string, conflict_resolution: string }[],
     color: null as string | null,
     // Free-form per-node description / runbook text. Lives on the server row
     // in the encrypted vault. Empty string by default — the textarea in the

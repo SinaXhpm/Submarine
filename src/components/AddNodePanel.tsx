@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Cpu, X, Link2, ArrowLeftRight, Shield, ShieldAlert, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy, Play, FlaskConical } from "lucide-react";
+import { Cpu, X, Link2, ArrowLeft, ArrowLeftRight, ArrowRight, Shield, ShieldAlert, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy, Play, FlaskConical } from "lucide-react";
 import PasswordField from "./PasswordField";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
@@ -38,6 +38,28 @@ function hlcTime(stamp?: string | null): Date | null {
   return Number.isFinite(ms) && ms > 0 ? new Date(ms) : null;
 }
 
+// A mirror's patterns as one line, split at commas. The text is kept as typed:
+// made from the list on each key, a comma or space just typed was gone at once.
+function PatternListInput({ value, onChange, placeholder, title }: { value: string[]; onChange: (list: string[]) => void; placeholder: string; title: string }) {
+  const split = (text: string) => text.split(",").map((s) => s.trim()).filter(Boolean);
+  const [text, setText] = useState(() => value.join(", "));
+  // A list that changed elsewhere (a mirror above removed) shows as it is.
+  const joined = value.join("\n");
+  useEffect(() => {
+    if (split(text).join("\n") !== joined) setText(value.join(", "));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joined]);
+  return (
+    <input
+      className="flex-1 min-w-0 h-6 bg-transparent rounded px-1 text-[10.5px] font-mono text-zinc-400 placeholder:text-zinc-700 outline-none"
+      placeholder={placeholder}
+      title={title}
+      value={text}
+      onChange={(e) => { setText(e.target.value); onChange(split(e.target.value)); }}
+    />
+  );
+}
+
 // Shape returned by the `parse_ssh_config` backend command. One entry per
 // non-wildcard alias resolved from the user's OpenSSH config. FileZilla's site
 // list (read_filezilla_sites, or pasted) adds FTP sites (`protocol`) and the
@@ -67,6 +89,8 @@ type ImportedSshKey = {
 
 const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, refreshSshKeys, folders, refreshFolders, refreshServers, servers, isEditMode, formError, isMobile }: any) => {
   const t = useT();
+  // How a mirror's patterns are read (mirror.rs `Pattern`), as the Mirror panel says it.
+  const patternHelp = t("A name with * or ? is a pattern (*.sql, v?.txt). With a / it starts at the mirrored folder (db/*.sql), and a / at the end means folders only (cache/). Other text is found anywhere in the path.");
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   // An RDP (issue #3), telnet (#179) or VNC server has a host, port, login
   // and maybe an SSH server to go through; the SSH-only parts of the form
@@ -1154,10 +1178,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </div>
             </div>
 
-            {/* Folder mirrors saved on this node — one-way local → remote
-                sync. Stored alongside tunnels so they roam with the vault.
-                Live management (start / stop / log) lives in the Mirror
-                panel inside an open session. */}
+            {/* Folder mirrors saved on this node — both ways or one way, of
+                every file or of the ones the patterns name. Stored alongside
+                tunnels so they roam with the vault. Live management (start /
+                stop / log) lives in the Mirror panel inside an open session. */}
             <div className="space-y-2.5">
               <div className="flex justify-between items-center">
                 <span className="text-[11px] font-bold text-zinc-400">{t("Folder mirrors")}</span>
@@ -1165,7 +1189,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   type="button"
                   onClick={() => setNewNode({
                     ...newNode,
-                    mirrors: [...(newNode.mirrors || []), { local: "", remote: "", soft_delete: true, excludes: [], conflict_resolution: "local" }],
+                    mirrors: [...(newNode.mirrors || []), { local: "", remote: "", soft_delete: true, excludes: [], includes: [], direction: "both", conflict_resolution: "local" }],
                   })}
                   className="text-[11px] font-bold text-primary hover:text-primary transition-colors"
                 >{t("+ Add")}</button>
@@ -1184,7 +1208,9 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                           setNewNode({ ...newNode, mirrors: next });
                         }}
                       />
-                      <ArrowLeftRight size={10} className="text-zinc-700 shrink-0 mx-1" />
+                      {m.direction === "download" ? <ArrowLeft size={10} className="text-zinc-700 shrink-0 mx-1" />
+                        : m.direction === "upload" ? <ArrowRight size={10} className="text-zinc-700 shrink-0 mx-1" />
+                        : <ArrowLeftRight size={10} className="text-zinc-700 shrink-0 mx-1" />}
                       <input
                         className="flex-1 min-w-0 h-7 bg-black/40 rounded px-2 text-[11.5px] font-mono text-zinc-200 border border-white/10 outline-none focus:border-primary/50"
                         placeholder="/remote/path"
@@ -1203,42 +1229,73 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         <X size={12} />
                       </button>
                     </div>
-                    <div className="flex items-center gap-3 pl-1">
-                      <label className="flex items-center gap-1.5 text-[10.5px] text-zinc-400 select-none cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={m.soft_delete !== false}
-                          onChange={(e) => {
-                            const next = [...newNode.mirrors];
-                            next[idx] = { ...next[idx], soft_delete: e.target.checked };
-                            setNewNode({ ...newNode, mirrors: next });
-                          }}
-                          className="accent-primary"
-                        />
-                        <span>{t("Soft delete")}</span>
-                      </label>
+                    <div className="flex items-center gap-3 pl-1 flex-wrap">
                       <select
-                        value={m.conflict_resolution || "local"}
+                        value={m.direction || "both"}
                         onChange={(e) => {
                           const next = [...newNode.mirrors];
-                          next[idx] = { ...next[idx], conflict_resolution: e.target.value };
+                          next[idx] = { ...next[idx], direction: e.target.value };
                           setNewNode({ ...newNode, mirrors: next });
                         }}
-                        title={t("Initial-sync conflict resolution: which side overwrites when a file exists on both with different content. Files missing on one side always copy across.")}
+                        aria-label={t("Direction")}
                         className="h-6 px-1.5 bg-black/30 border border-white/10 rounded text-[10.5px] text-zinc-300 outline-none focus:border-primary/40"
                       >
-                        <option value="local">{t("Local wins")}</option>
-                        <option value="remote">{t("Remote wins")}</option>
-                        <option value="newer">{t("Newer wins")}</option>
+                        <option value="both">{t("Both ways")}</option>
+                        <option value="download">{t("Server → this device (once)")}</option>
+                        <option value="upload">{t("This device → server")}</option>
                       </select>
-                      <input
-                        className="flex-1 min-w-0 h-6 bg-transparent rounded px-1 text-[10.5px] font-mono text-zinc-400 placeholder:text-zinc-700 outline-none"
-                        placeholder={t("Excludes: .git, node_modules, *.swp")}
-                        value={(m.excludes || []).join(", ")}
-                        onChange={(e) => {
-                          const parts = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                      {/* One way, the side it copies from wins. */}
+                      {(m.direction || "both") === "both" && (
+                        <select
+                          value={m.conflict_resolution || "local"}
+                          onChange={(e) => {
+                            const next = [...newNode.mirrors];
+                            next[idx] = { ...next[idx], conflict_resolution: e.target.value };
+                            setNewNode({ ...newNode, mirrors: next });
+                          }}
+                          title={t("Initial-sync conflict resolution: which side overwrites when a file exists on both with different content. Files missing on one side always copy across.")}
+                          className="h-6 px-1.5 bg-black/30 border border-white/10 rounded text-[10.5px] text-zinc-300 outline-none focus:border-primary/40"
+                        >
+                          <option value="local">{t("Local wins")}</option>
+                          <option value="remote">{t("Remote wins")}</option>
+                          <option value="newer">{t("Newer wins")}</option>
+                        </select>
+                      )}
+                      {/* Only the live mirror deletes: one from the server runs once. */}
+                      {m.direction !== "download" && (
+                        <label className="flex items-center gap-1.5 text-[10.5px] text-zinc-400 select-none cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={m.soft_delete !== false}
+                            onChange={(e) => {
+                              const next = [...newNode.mirrors];
+                              next[idx] = { ...next[idx], soft_delete: e.target.checked };
+                              setNewNode({ ...newNode, mirrors: next });
+                            }}
+                            className="accent-primary"
+                          />
+                          <span>{t("Soft delete")}</span>
+                        </label>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 pl-1">
+                      <PatternListInput
+                        value={m.includes || []}
+                        placeholder={t("Only these: *.sql, db/ (empty: every file)")}
+                        title={patternHelp}
+                        onChange={(list) => {
                           const next = [...newNode.mirrors];
-                          next[idx] = { ...next[idx], excludes: parts };
+                          next[idx] = { ...next[idx], includes: list };
+                          setNewNode({ ...newNode, mirrors: next });
+                        }}
+                      />
+                      <PatternListInput
+                        value={m.excludes || []}
+                        placeholder={t("Skip these: *.log, cache/, build")}
+                        title={patternHelp}
+                        onChange={(list) => {
+                          const next = [...newNode.mirrors];
+                          next[idx] = { ...next[idx], excludes: list };
                           setNewNode({ ...newNode, mirrors: next });
                         }}
                       />
