@@ -5582,6 +5582,7 @@ mod sync_engine_tests {
         assert!(empties(&with_field(of(&recs, "servers"), "password", json!(""))));
         let tailcat = of(&recs, "servers");
         assert!(empties(&with_field(tailcat, "tailcat_address", json!(""))), "a Tailcat capability is protected as a secret");
+        assert!(!empties(&reworked(tailcat, |obj| { obj.remove("tailcat_address"); })), "an older peer that omits this field is not clearing the capability");
 
         assert!(!empties(&with_field(key, "private_key", json!("another key"))), "a secret replaced is an edit");
         let new_key = |c: &str, passphrase: serde_json::Value| {
