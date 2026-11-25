@@ -10626,6 +10626,34 @@ fn secret_candidates(
     .collect()
 }
 
+/// A password the password method turned down on a server that also takes
+/// keyboard-interactive, for that to answer the server's password question with
+/// (see `authenticate_password_prompting`).
+struct KbiHandoff {
+    password: zeroize::Zeroizing<String>,
+    source: SecretSource,
+    /// Typed with "Save password" ticked.
+    save: bool,
+}
+
+impl KbiHandoff {
+    fn answer(&self) -> KbiPassword<'_> {
+        KbiPassword { value: self.password.as_str(), typed: self.source != SecretSource::Given, save: self.save }
+    }
+}
+
+/// The password a keyboard-interactive login has for the server's password
+/// question (see `is_password_prompt`): the saved one, or one the password
+/// method turned down (`KbiHandoff`).
+#[derive(Clone, Copy)]
+struct KbiPassword<'a> {
+    value: &'a str,
+    /// Typed by the user (else saved): only for the log's wording.
+    typed: bool,
+    /// Typed with "Save password" ticked: saved once the login with it worked.
+    save: bool,
+}
+
 /// Everything a connect-time secret prompt needs besides the SSH session: where
 /// to show it (the keyboard-interactive modal of `session_id`, answered under
 /// `nonce`) and where accepted secrets live (`cache`, under the tab's `base`
@@ -11444,6 +11472,18 @@ async fn resolve_login_user(
 /// password box. `Ok(false)` — password not offered, prompt cancelled or timed
 /// out, or prompts used up — leaves the caller's keyboard-interactive fallback
 /// to run exactly as before.
+///
+/// `handoff` is for a caller that goes on with keyboard-interactive. A server
+/// that asks for a one-time code after the password through PAM (Google
+/// Authenticator and the like) turns the password method down even for the
+/// right password: sshd gives the password to the code question too. It takes
+/// keyboard-interactive as well, which asks for the password and then the code
+/// (OpenSSH tries that method first, so it logs in there). So the first
+/// password turned down while the server offers keyboard-interactive isn't
+/// asked for again here: it goes into `handoff`, and this ends with
+/// `Ok(false)`, for the caller's keyboard-interactive to answer the server's
+/// password question with it. A wrong one is asked for again there.
+#[allow(clippy::too_many_arguments)]
 async fn authenticate_password_prompting<H: russh::client::Handler>(
     session: &mut russh::client::Handle<H>,
     user: &str,
@@ -11452,6 +11492,7 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
     saved_password: Option<zeroize::Zeroizing<String>>,
     slot: SecretSlot,
     ctx: &SecretPromptCtx<'_>,
+    mut handoff: Option<&mut Option<KbiHandoff>>,
 ) -> Result<bool, russh::Error> {
     let cached = cache_get_secret(ctx.cache, ctx.base, slot).await;
     let candidates = secret_candidates(override_password, cached, saved_password);
@@ -11573,6 +11614,20 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
                     cache_clear_secret(ctx.cache, ctx.base, slot).await;
                 }
                 password_offered = remaining_methods.contains(&russh::MethodKind::Password);
+                if let Some(handoff) = handoff.as_deref_mut() {
+                    if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive) {
+                        ctx.log(
+                            if password_offered {
+                                "Password rejected. The server also takes keyboard-interactive, which can ask for a code after the password: trying that."
+                            } else {
+                                "The server takes the password through keyboard-interactive: trying that."
+                            },
+                            "info",
+                        );
+                        *handoff = Some(KbiHandoff { password, source, save: source == SecretSource::Prompt && save_typed });
+                        return Ok(false);
+                    }
+                }
                 rejected = true;
             }
         }
@@ -12578,9 +12633,11 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     // current (see ssh_manager::ConnectAttempt).
     attempt: &ssh_manager::ConnectAttempt,
     // The saved password, for a server that asks for it here rather than
-    // through the password method (#145): it answers the server's password
-    // question once, and only that (see is_password_prompt).
-    saved_password: Option<&str>,
+    // through the password method (#145), or the password that method turned
+    // down on a server that asks for a code after it (see KbiHandoff): it
+    // answers the server's password question once, and only that (see
+    // is_password_prompt).
+    saved_password: Option<KbiPassword<'_>>,
     // The saved server this login is for: the server's password question
     // offers "Save password", and a ticked answer is saved there once the
     // login worked (see save_prompted_password).
@@ -12623,12 +12680,21 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     // result once the server has actually asked us something.
     let mut asked_anything = false;
     // Not used yet; taken by its one answer.
-    let mut saved_password = saved_password.filter(|p| !p.is_empty());
+    let mut saved_password = saved_password.filter(|p| !p.value.is_empty());
+    let typed_in_hand = saved_password.is_some_and(|p| p.typed);
     let mut answered_with_saved = false;
     // Rounds the server asked nothing in: a server can go on with them for ever.
     let mut empty_rounds = 0u32;
     // The user's answer to the server's password question, ticked "Save password".
     let mut to_save: Option<zeroize::Zeroizing<String>> = None;
+    // The user's answers to the server's password question. One turned down
+    // is asked for again, up to MAX_SECRET_PROMPTS answers, as the password
+    // method's prompt is.
+    let mut password_answers = 0u32;
+    // The round the server just answered was the user's password.
+    let mut answered_password = false;
+    // The next password question says the last password was rejected.
+    let mut say_rejected = false;
 
     loop {
         match resp {
@@ -12644,13 +12710,18 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
             KeyboardInteractiveAuthResponse::Failure { .. } => {
                 if answered_with_saved {
                     if !may_ask {
-                        log("The saved password was rejected.", "error");
+                        log(if typed_in_hand { "The password was rejected." } else { "The saved password was rejected." }, "error");
                         return Some(Ok(false));
                     }
-                    // The saved password was turned down. Start over and ask
-                    // the user, as without one.
+                    // The password in hand was turned down (so it isn't
+                    // saved). Start over and ask the user, as without one.
                     answered_with_saved = false;
-                    log("The saved password was rejected. Asking for it...", "error");
+                    to_save = None;
+                    say_rejected = true;
+                    log(
+                        if typed_in_hand { "The password was rejected. Asking for it again..." } else { "The saved password was rejected. Asking for it..." },
+                        "error",
+                    );
                     resp = match session
                         .authenticate_keyboard_interactive_start(user.to_string(), None)
                         .await
@@ -12663,6 +12734,26 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                 if !asked_anything {
                     // Server declined the method outright — not really offered.
                     return None;
+                }
+                if answered_password {
+                    if password_answers < MAX_SECRET_PROMPTS {
+                        // A mistyped password: start over and ask again.
+                        answered_password = false;
+                        to_save = None;
+                        *typed_password = None;
+                        say_rejected = true;
+                        log("The password was rejected. Asking for it again...", "error");
+                        resp = match session
+                            .authenticate_keyboard_interactive_start(user.to_string(), None)
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        continue;
+                    }
+                    log("Password rejected by server.", "error");
+                    return Some(Ok(false));
                 }
                 log("Verification code rejected by server.", "error");
                 return Some(Ok(false));
@@ -12690,16 +12781,28 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                     continue;
                 }
                 // The server's own password question (PAM's "Password:"),
-                // asked here because it doesn't take the password method:
-                // the saved password answers it, as the password method
-                // would have sent it. Only once, so a wrong one ends up with
-                // the user, and never a code or anything else.
-                if prompts.len() == 1 && is_password_prompt(&prompts[0].prompt, prompts[0].echo) {
+                // asked here because it doesn't take the password method, or
+                // as the step before a code: the password in hand answers it,
+                // as the password method would have sent it. Only once, so a
+                // wrong one ends up with the user, and never a code or
+                // anything else.
+                let lone_password = prompts.len() == 1 && is_password_prompt(&prompts[0].prompt, prompts[0].echo);
+                if lone_password {
                     if let Some(password) = saved_password.take() {
-                        log("Answering the server's password prompt with the saved password...", "info");
+                        log(
+                            if password.typed {
+                                "Answering the server's password prompt with the password typed before..."
+                            } else {
+                                "Answering the server's password prompt with the saved password..."
+                            },
+                            "info",
+                        );
                         answered_with_saved = true;
+                        if password.save {
+                            to_save = Some(zeroize::Zeroizing::new(password.value.to_string()));
+                        }
                         resp = match session
-                            .authenticate_keyboard_interactive_respond(vec![password.to_string()])
+                            .authenticate_keyboard_interactive_respond(vec![password.value.to_string()])
                             .await
                         {
                             Ok(r) => r,
@@ -12732,7 +12835,16 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                     .map(|p| serde_json::json!({ "prompt": p.prompt, "echo": p.echo }))
                     .collect();
                 // Only the server's own password question offers the tick: never a code.
-                let password_question = save_to.is_some() && prompts.len() == 1 && is_password_prompt(&prompts[0].prompt, prompts[0].echo);
+                let password_question = save_to.is_some() && lone_password;
+                // After a rejected password, the question says so, as the
+                // password method's prompt does.
+                let instructions = if say_rejected && lone_password {
+                    say_rejected = false;
+                    let note = "The password was rejected. Please try again.";
+                    if instructions.trim().is_empty() { note.to_string() } else { format!("{note}\n{instructions}") }
+                } else {
+                    instructions
+                };
                 let mut payload = serde_json::json!({
                     "nonce": nonce,
                     "name": name,
@@ -12780,7 +12892,9 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                         None
                     };
                 }
-                if prompts.len() == 1 && is_password_prompt(&prompts[0].prompt, prompts[0].echo) && !answers[0].is_empty() {
+                answered_password = lone_password && !answers[0].is_empty();
+                if answered_password {
+                    password_answers += 1;
                     *typed_password = Some(Zeroizing::new(answers[0].clone()));
                 }
 
@@ -14235,6 +14349,9 @@ async fn login_hop(
     // For a jump host that asks for the password through keyboard-interactive
     // (#145).
     let kbi_password = password.clone().map(Zeroizing::new);
+    // The password the password method turned down on a jump host that takes
+    // keyboard-interactive too (see KbiHandoff).
+    let mut handoff: Option<KbiHandoff> = None;
     let mut auth_res = if login_cancelled {
         Ok(false)
     } else if let Some((private_key, passphrase, key_name)) = key_data {
@@ -14265,6 +14382,7 @@ async fn login_hop(
                 password.map(Zeroizing::new),
                 SecretSlot::JumpPassword,
                 &prompt_ctx,
+                Some(&mut handoff),
             ))
             .await
             .unwrap_or(Err(russh::Error::ConnectionTimeout))
@@ -14277,6 +14395,10 @@ async fn login_hop(
         && !prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
     {
         let save_offer = prompt_ctx.save_offer().await;
+        let mut typed_password = None;
+        let in_hand = handoff.as_ref().map(KbiHandoff::answer).or_else(|| {
+            kbi_password.as_ref().map(|p| KbiPassword { value: p.as_str(), typed: false, save: false })
+        });
         if let Some(kbi_res) = prompt_ctx
             .login_step(run_keyboard_interactive(
                 &mut session,
@@ -14286,15 +14408,23 @@ async fn login_hop(
                 &jump_nonce,
                 ctx.kbi_txs,
                 ctx.attempt,
-                kbi_password.as_ref().map(|p| p.as_str()),
+                in_hand,
                 save_offer,
                 ctx.allow_prompt,
-                &mut None,
+                &mut typed_password,
             ))
             .await
             .unwrap_or(Some(Err(russh::Error::ConnectionTimeout)))
         {
             auth_res = kbi_res;
+        }
+        // Kept for reconnects once it worked, as the password method keeps a
+        // typed one: a code is still asked each time.
+        if matches!(auth_res, Ok(true)) {
+            let keep = typed_password.or_else(|| handoff.take().filter(|h| h.source != SecretSource::Given).map(|h| h.password));
+            if let Some(keep) = keep {
+                cache_store_secret(ctx.cache, &base_id, SecretSlot::JumpPassword, keep).await;
+            }
         }
     }
     release_agent(&prompt_ctx).await;
@@ -15203,6 +15333,9 @@ async fn initiate_connection(
                 if kbi_password_only && kbi_password.is_none() {
                     kbi_password = cache_get_secret(&prompted_secrets_clone, &base_id, SecretSlot::Password).await;
                 }
+                // The password the password method turned down on a server
+                // that takes keyboard-interactive too (see KbiHandoff).
+                let mut handoff: Option<KbiHandoff> = None;
 
                 let mut auth_res = if login_cancelled {
                     // "Login as" was cancelled — nothing to try. The prompt set
@@ -15241,6 +15374,8 @@ async fn initiate_connection(
                             password.map(Zeroizing::new),
                             SecretSlot::Password,
                             &prompt_ctx,
+                            // Only when keyboard-interactive runs below.
+                            (allow_kbi || kbi_password_only).then_some(&mut handoff),
                         ))
                         .await
                         .unwrap_or(Err(russh::Error::ConnectionTimeout))
@@ -15265,6 +15400,11 @@ async fn initiate_connection(
                 {
                     let mut typed_password = None;
                     let save_offer = prompt_ctx.save_offer().await;
+                    // The password the password method turned down, else the
+                    // saved one.
+                    let in_hand = handoff.as_ref().map(KbiHandoff::answer).or_else(|| {
+                        kbi_password.as_ref().map(|p| KbiPassword { value: p.as_str(), typed: false, save: false })
+                    });
                     if let Some(kbi_res) = prompt_ctx
                         .login_step(run_keyboard_interactive(
                             &mut session,
@@ -15274,7 +15414,7 @@ async fn initiate_connection(
                             &connect_nonce,
                             &kbi_txs_clone,
                             &attempt,
-                            kbi_password.as_ref().map(|p| p.as_str()),
+                            in_hand,
                             save_offer,
                             allow_kbi,
                             &mut typed_password,
@@ -15286,8 +15426,12 @@ async fn initiate_connection(
                     }
                     // Kept for the tab once it worked, like a password typed
                     // for the password method: a terminal's own login uses it.
-                    if let (Some(typed), Ok(true)) = (typed_password, &auth_res) {
-                        cache_store_secret(&prompted_secrets_clone, &base_id, SecretSlot::Password, typed).await;
+                    // So is one handed over that wasn't the saved one.
+                    if matches!(auth_res, Ok(true)) {
+                        let keep = typed_password.or_else(|| handoff.take().filter(|h| h.source != SecretSource::Given).map(|h| h.password));
+                        if let Some(keep) = keep {
+                            cache_store_secret(&prompted_secrets_clone, &base_id, SecretSlot::Password, keep).await;
+                        }
                     }
                 }
                 release_agent(&prompt_ctx).await;
