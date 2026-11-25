@@ -3,8 +3,15 @@
 //! server, and the server's files once they are here, for the user to paste.
 //! Windows (CF_HDROP), macOS (file URLs) and Linux (GTK: `text/uri-list` and
 //! GNOME's copied files). A phone has none.
+//! On Windows also its text, for a paste (lib.rs `clipboard_read_text`).
 
 use std::path::PathBuf;
+
+/// The text on this device's clipboard ("" when it holds none).
+#[cfg(windows)]
+pub async fn read_text() -> Result<String, String> {
+    tokio::task::spawn_blocking(win::read_text).await.map_err(|e| e.to_string())?
+}
 
 /// The files on this device's clipboard; none when it holds something else.
 pub async fn read(app: &tauri::AppHandle) -> Result<Vec<PathBuf>, String> {
@@ -183,6 +190,9 @@ mod win {
 
     /// CF_HDROP: a list of files, as Explorer copies them.
     const CF_HDROP: u32 = 15;
+    /// CF_UNICODETEXT: text in UTF-16, ending in a NUL. Windows makes it from
+    /// the older text formats when an app put only those there.
+    const CF_UNICODETEXT: u32 = 13;
     /// DROPEFFECT_COPY, for "Preferred DropEffect": the files are a copy, not a cut.
     const DROPEFFECT_COPY: u32 = 1;
 
@@ -229,6 +239,25 @@ mod win {
         }
     }
 
+    pub fn read_text() -> Result<String, String> {
+        // SAFETY: plain calls; the memory is only read while it is locked.
+        unsafe {
+            if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
+                return Ok(String::new());
+            }
+            let _open = Open::new()?;
+            let handle = GetClipboardData(CF_UNICODETEXT).map_err(|e| format!("The clipboard's text couldn't be read: {e}"))?;
+            let global = HGLOBAL(handle.0);
+            let ptr = GlobalLock(global) as *const u8;
+            if ptr.is_null() {
+                return Err("The clipboard's text couldn't be read.".into());
+            }
+            let bytes = std::slice::from_raw_parts(ptr, GlobalSize(global)).to_vec();
+            let _ = GlobalUnlock(global);
+            Ok(super::parse_unicode_text(&bytes))
+        }
+    }
+
     pub fn write(paths: &[PathBuf]) -> Result<(), String> {
         let list = super::drop_files(paths);
         let _open = Open::new()?;
@@ -263,6 +292,50 @@ mod win {
             }
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A round trip through Windows' clipboard. Each window station has a
+        /// clipboard of its own, and this test puts text there, so it runs only
+        /// outside the user's ("WinSta0"): start it in a desktop of another one
+        /// (an unnamed CreateWindowStation, which a standard user may make).
+        #[test]
+        #[ignore = "puts text on the clipboard: only outside the user's window station"]
+        fn text_comes_off_the_clipboard_as_it_was_put_there() {
+            #[link(name = "user32")]
+            unsafe extern "system" {
+                fn GetProcessWindowStation() -> *mut core::ffi::c_void;
+                fn GetUserObjectInformationW(object: *mut core::ffi::c_void, index: i32, info: *mut u16, len: u32, needed: *mut u32) -> i32;
+            }
+            const UOI_NAME: i32 = 2;
+            let mut name = [0u16; 256];
+            let mut needed = 0u32;
+            // SAFETY: this process's own window station; its name fits the
+            // buffer (whose size is given in bytes), or the call fails.
+            let ok = unsafe { GetUserObjectInformationW(GetProcessWindowStation(), UOI_NAME, name.as_mut_ptr(), 512, &mut needed) };
+            let station = String::from_utf16_lossy(&name[..name.iter().position(|u| *u == 0).unwrap_or(0)]);
+            assert!(ok != 0 && !station.is_empty() && !station.eq_ignore_ascii_case("WinSta0"), "run it outside the user's window station (WinSta0): {station:?}");
+
+            let put = |text: Option<&str>| {
+                let _open = Open::new().unwrap();
+                // SAFETY: the clipboard is open (`_open`).
+                unsafe { EmptyClipboard() }.unwrap();
+                if let Some(text) = text {
+                    let data: Vec<u8> = text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+                    set(CF_UNICODETEXT, &data).unwrap();
+                }
+            };
+            for text in ["héllo ✓ 世界 🦀\r\nline 2", "x"] {
+                put(Some(text));
+                assert_eq!(read_text().unwrap(), text);
+            }
+            put(None);
+            assert_eq!(read_text().unwrap(), "", "an empty clipboard");
+            println!("clipboard round trip passed in window station {station:?}");
+        }
     }
 }
 
@@ -306,9 +379,40 @@ fn parse_drop_files(data: &[u8]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// CF_UNICODETEXT's text: the UTF-16 up to its NUL. The clipboard's memory
+/// block can be longer than the text.
+#[cfg(any(windows, test))]
+fn parse_unicode_text(data: &[u8]) -> String {
+    let units: Vec<u16> = data.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+    let end = units.iter().position(|u| *u == 0).unwrap_or(units.len());
+    String::from_utf16_lossy(&units[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn clipboard_text_reads_up_to_its_nul() {
+        let text = "héllo ✓ 世界 🦀\r\nline 2";
+        let mut data = utf16(text);
+        data.extend_from_slice(&[0, 0]);
+        assert_eq!(parse_unicode_text(&data), text);
+        // The memory block runs on past the NUL.
+        data.extend_from_slice(&utf16("left over"));
+        data.push(7);
+        assert_eq!(parse_unicode_text(&data), text);
+        // No NUL, or an odd byte at the end: the whole units still count.
+        let mut open = utf16("ab");
+        open.push(b'c');
+        assert_eq!(parse_unicode_text(&open), "ab");
+        assert_eq!(parse_unicode_text(&[]), "");
+        assert_eq!(parse_unicode_text(&[0, 0, b'a', 0]), "");
+    }
 
     #[test]
     fn a_file_list_reads_back_as_it_was_written() {

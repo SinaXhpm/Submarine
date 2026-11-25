@@ -43,8 +43,8 @@ export function takeServerCopy(text: string, inFront: boolean, hold: (text: stri
   );
 }
 
-/** This device's clipboard text. On Linux and Android the backend reads it
- *  (see util/clipboard). */
+/** This device's clipboard text. On Windows, Linux and Android the backend
+ *  reads it (see util/clipboard). */
 export function readLocalClipboard(): Promise<string> {
   return readClipboardText();
 }

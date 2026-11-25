@@ -1694,9 +1694,10 @@ const TerminalView = ({
       }
       if (toast) notify(t('Pasted'));
     };
-    // The clipboard's text comes from util/clipboard: on Linux and Android the
-    // backend reads it, since WebKitGTK refuses the page's own read (#89) and
-    // can crash on an empty clipboard, and Android's WebView refuses it outright.
+    // The clipboard's text comes from util/clipboard: on Windows, Linux and
+    // Android the backend reads it, since WebView2 asks the user to allow the
+    // page's own read (and a Block stays), WebKitGTK refuses it (#89) and can
+    // crash on an empty clipboard, and Android's WebView refuses it outright.
     const pasteClipboard = async (toast: boolean) => {
       if (disabledRef.current) return;
       let text = '';
