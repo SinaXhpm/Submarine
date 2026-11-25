@@ -223,7 +223,7 @@ export default function FtpSessionView({ session, profile, displayName, onClose,
 
   const logList = (
     <div
-      className="flex-1 min-h-0 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono text-[12px] overflow-y-auto overscroll-contain custom-scrollbar select-text cursor-text"
+      className="flex-1 min-h-0 bg-shade-121214 border border-white/5 rounded-2xl p-4 font-mono text-[12px] overflow-y-auto overscroll-contain custom-scrollbar select-text cursor-text"
       style={{ WebkitOverflowScrolling: "touch", lineHeight: 1.5 }}
     >
       {logs.map((l, i) => (
@@ -239,8 +239,8 @@ export default function FtpSessionView({ session, profile, displayName, onClose,
   );
 
   return (
-    <div className="relative flex-1 flex flex-col min-h-0 bg-[#0a0a0c] text-white overflow-hidden" data-ftp-status={status}>
-      <div className="h-10 shrink-0 flex items-center gap-2 px-3 border-b border-white/5 bg-[#141417]">
+    <div className="relative flex-1 flex flex-col min-h-0 bg-shade-0a0a0c text-white overflow-hidden" data-ftp-status={status}>
+      <div className="h-10 shrink-0 flex items-center gap-2 px-3 border-b border-white/5 bg-shade-141417">
         <span className={`shrink-0 ${broken ? "text-red-400" : "text-primary"}`} aria-hidden="true">
           {working ? <Loader2 size={14} className="animate-spin-brief" /> : broken ? <AlertTriangle size={14} /> : <FolderOpen size={14} />}
         </span>
@@ -351,12 +351,12 @@ export default function FtpSessionView({ session, profile, displayName, onClose,
             </div>
           )}
           {broken && reason && (
-            <div className="absolute left-3 right-3 top-3 z-20 px-3 py-2 rounded-lg border border-red-500/20 bg-[#1a0f10]/95 text-[12px] text-red-300/90 break-words">
+            <div className="absolute left-3 right-3 top-3 z-20 px-3 py-2 rounded-lg border border-red-500/20 bg-shade-1a0f10/95 text-[12px] text-red-300/90 break-words">
               {reason}
             </div>
           )}
           {showLog && (
-            <div className="absolute inset-0 z-30 flex flex-col p-3 sm:p-4 bg-[#0a0a0c]/95">
+            <div className="absolute inset-0 z-30 flex flex-col p-3 sm:p-4 bg-shade-0a0a0c/95">
               {logList}
             </div>
           )}

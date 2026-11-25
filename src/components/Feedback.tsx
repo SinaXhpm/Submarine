@@ -177,7 +177,7 @@ export function FeedbackHost() {
   const error = result && result.status !== "sent" ? errorText(result) : null;
   const sentId = result?.status === "sent" ? result.id : null;
 
-  const field = "w-full bg-[#1a1a1e] rounded-lg px-3 text-[13px] text-white border outline-none transition-all shadow-inner";
+  const field = "w-full bg-shade-1a1a1e rounded-lg px-3 text-[13px] text-white border outline-none transition-all shadow-inner";
   const border = (bad: boolean) => (bad ? "border-red-500/60 focus:border-red-400" : "border-white/10 focus:border-primary/50");
 
   return (

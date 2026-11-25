@@ -45,7 +45,7 @@ const Sparkline = ({
   if (!data || data.length < 2) {
     return (
       <svg {...svgProps}>
-        <line x1="0" y1={height - 1} x2={width} y2={height - 1} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+        <line x1="0" y1={height - 1} x2={width} y2={height - 1} className="stroke-white/[0.08]" strokeWidth="1" />
       </svg>
     );
   }

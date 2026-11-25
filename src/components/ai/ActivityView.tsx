@@ -388,7 +388,7 @@ export const ActivityView = ({ serverUuid, serverName, serverNames, sessionId = 
   const spinner = <div className="flex justify-center py-6 text-zinc-500"><Loader2 size={16} className="animate-spin" /></div>;
 
   return (
-    <div ref={rootRef} tabIndex={-1} role="region" aria-labelledby={`${uid}-title`} className="flex-1 min-h-0 min-w-0 flex flex-col bg-[#121214] outline-none">
+    <div ref={rootRef} tabIndex={-1} role="region" aria-labelledby={`${uid}-title`} className="flex-1 min-h-0 min-w-0 flex flex-col bg-shade-121214 outline-none">
       <div className="h-11 px-2 flex items-center gap-1.5 border-b border-white/5 bg-white/[0.02] shrink-0">
         <History size={14} aria-hidden="true" className="text-primary shrink-0 ml-1" />
         <h2 id={`${uid}-title`} className="flex-1 min-w-0 px-1 text-[13px] font-semibold text-zinc-100 truncate">
@@ -438,7 +438,7 @@ export const ActivityView = ({ serverUuid, serverName, serverNames, sessionId = 
 
         <section aria-labelledby={`${uid}-log`}>
           {/* Stays in view over the rows, with the search. */}
-          <div className="sticky top-0 z-10 bg-[#121214] px-3 pt-3 pb-2 space-y-2">
+          <div className="sticky top-0 z-10 bg-shade-121214 px-3 pt-3 pb-2 space-y-2">
             <div className="flex items-baseline gap-2">
               <h3 id={`${uid}-log`} className="text-[11px] font-semibold text-zinc-500">What the assistant did</h3>
               {hasItems && <span className="text-[10.5px] text-zinc-600">{needle ? `${shownRows.length} of ${items.length}` : items.length}</span>}

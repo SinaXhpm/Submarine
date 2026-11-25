@@ -311,7 +311,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-[#09090b] overflow-hidden relative">
+    <div className="flex-1 flex flex-col h-full bg-shade-09090b overflow-hidden relative">
       {disabled && (
         <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono">
           <span className="px-3 py-1.5 bg-red-500/15 border border-red-500/30 rounded text-red-300">
@@ -321,7 +321,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       )}
 
       {/* Header */}
-      <div className="shrink-0 px-3 py-2 flex items-center justify-between border-b border-white/5 bg-[#121214]">
+      <div className="shrink-0 px-3 py-2 flex items-center justify-between border-b border-white/5 bg-shade-121214">
         <div className="flex items-center gap-2 text-[11px] font-semibold text-zinc-400">
           <FolderUp size={12} />
           <span>{t("{running} running · {saved} saved", { running: Object.keys(statuses).length, saved: allSavedMirrors.length })}</span>
@@ -338,7 +338,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       {/* Here and not in the form below: Start on a saved mirror, Stop and the
           save after a start all fail with that form closed. */}
       {error && (
-        <div className="shrink-0 px-3 py-1.5 border-b border-white/5 bg-[#0f0f12] text-[10.5px] text-rose-400 font-mono flex items-start gap-1.5">
+        <div className="shrink-0 px-3 py-1.5 border-b border-white/5 bg-shade-0f0f12 text-[10.5px] text-rose-400 font-mono flex items-start gap-1.5">
           <AlertTriangle size={11} className="mt-0.5 shrink-0" />
           <span className="min-w-0 break-words">{error}</span>
         </div>
@@ -346,7 +346,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
 
       {/* Ad-hoc new mirror form */}
       {adding && !pending && (
-        <div className="shrink-0 p-3 border-b border-white/5 bg-[#0f0f12] space-y-2">
+        <div className="shrink-0 p-3 border-b border-white/5 bg-shade-0f0f12 space-y-2">
           <div className="flex items-center gap-2">
             {/* Native folder picker is desktop-only (rfd). On Android the
                 backend command errors, so we hide the button and lean on
@@ -433,7 +433,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
         ).length;
         const conflictMode = pending.spec.conflict_resolution || "local";
         return (
-        <div className="shrink-0 p-3 border-b border-white/5 bg-[#0f0f12] space-y-2">
+        <div className="shrink-0 p-3 border-b border-white/5 bg-shade-0f0f12 space-y-2">
           <div className="flex items-start gap-2 text-[11px] text-zinc-300">
             <FolderUp size={13} className="text-primary mt-0.5 shrink-0" />
             <div className="min-w-0 flex-1">
@@ -598,7 +598,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       </div>
 
       {/* Log feed */}
-      <div className="shrink-0 border-t border-white/5 bg-[#0c0c0e]">
+      <div className="shrink-0 border-t border-white/5 bg-shade-0c0c0e">
         <div className="px-3 py-1.5 flex items-center justify-between border-b border-white/5">
           <span className="text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5">
             <FileText size={11} /> {t("Log")} <span className="text-zinc-600 font-normal">({logs.length})</span>

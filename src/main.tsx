@@ -9,10 +9,13 @@ import "./App.css";
 import "./util/bundledFonts";
 import { readFontFamily } from "./util/terminalFont";
 import { applyFonts, readUiFontFamily } from "./util/uiFont";
+import { applyTheme, readBackgroundColor, readPrimaryColor } from "./util/appTheme";
 
-// The fonts picked in Settings, before the first screen draws: the profile
-// list shows in them too, and nothing changes face once the app is up.
+// The fonts and colours picked in Settings, before the first screen draws:
+// the profile list shows in them too, and nothing changes face or turns
+// light once the app is up.
 applyFonts(readFontFamily(), readUiFontFamily());
+applyTheme(readPrimaryColor(), readBackgroundColor());
 
 // Last-resort global handlers so a failure that escapes React (an async reject,
 // a listener throw) is at least recorded instead of vanishing silently. The

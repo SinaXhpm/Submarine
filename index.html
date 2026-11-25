@@ -49,16 +49,19 @@
          Without this the WebView shows the default white background for
          the 200-700ms it takes JS to execute on first launch (very visible
          on Android cold-start). Matches --background in App.css so the
-         transition is invisible. -->
+         transition is invisible, and follows the background picked in
+         Settings once main.tsx sets it (util/appTheme), a light one too:
+         color-scheme on <html> only, which it switches for the light look. -->
     <style>
-      html, body { margin: 0; height: 100%; background: #0a0a0c; color-scheme: dark; }
+      html, body { margin: 0; height: 100%; background: var(--background, #0a0a0c); }
+      html { color-scheme: dark; }
       /* 100vh is for the pre-JS paint: main.tsx sets #root's height from
          window.visualViewport.height and keeps it in sync. On desktop the
          value equals innerHeight and never changes; on Android when the
          soft keyboard opens the visualViewport shrinks and the whole app
          tree (which uses h-full / flex-1 / min-h-0) cascades correctly
          above the keyboard. */
-      #root { height: 100vh; background: #0a0a0c; }
+      #root { height: 100vh; background: var(--background, #0a0a0c); }
     </style>
   </head>
   <body>

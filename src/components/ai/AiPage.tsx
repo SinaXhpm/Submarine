@@ -176,7 +176,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
   return (
     <div className="relative flex-1 flex min-h-0 min-w-0">
       {settingsOpen && (
-        <div data-ai-overlay="" data-ai-settings="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
+        <div data-ai-overlay="" data-ai-settings="" className="absolute inset-0 z-30 flex flex-col bg-shade-121214">
           <div className="h-11 px-3 flex items-center gap-2 border-b border-white/5 bg-white/[0.02] shrink-0">
             <Settings size={14} className="text-zinc-400 shrink-0" />
             <div className="flex-1 min-w-0 truncate text-[12px] font-semibold text-zinc-400">AI assistant settings</div>
@@ -191,7 +191,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
         </div>
       )}
       {activity && (
-        <div data-ai-overlay="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
+        <div data-ai-overlay="" className="absolute inset-0 z-30 flex flex-col bg-shade-121214">
           <ActivityView
             serverUuid={null}
             serverNames={{ ...Object.fromEntries(servers), ...serverNames }}

@@ -210,7 +210,7 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
         <ChevronDown size={13} className="shrink-0 text-zinc-500" />
       </button>
       {chatMenu && (
-        <div className="absolute left-0 top-10 z-40 w-[min(22rem,90vw)] max-h-96 overflow-y-auto rounded-xl border border-white/10 bg-[#16161a] shadow-2xl p-1 text-[12px]">
+        <div className="absolute left-0 top-10 z-40 w-[min(22rem,90vw)] max-h-96 overflow-y-auto rounded-xl border border-white/10 bg-shade-16161a shadow-2xl p-1 text-[12px]">
           <button type="button" disabled={!connected || busy || !providers?.length} onClick={() => void newChat()} className="w-full text-left px-3 py-3 sm:py-2 rounded-lg hover:bg-white/5 text-primary flex items-center gap-2 disabled:opacity-40">
             <Plus size={12} /> New chat
           </button>
@@ -308,7 +308,7 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
   );
 
   const activityView = activity && serverUuid && (
-    <div data-ai-overlay="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
+    <div data-ai-overlay="" className="absolute inset-0 z-30 flex flex-col bg-shade-121214">
       <ActivityView
         serverUuid={serverUuid}
         serverName={serverName}
@@ -320,7 +320,7 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
   );
 
   const settingsView = settingsOpen && (
-    <div data-ai-overlay="" data-ai-settings="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
+    <div data-ai-overlay="" data-ai-settings="" className="absolute inset-0 z-30 flex flex-col bg-shade-121214">
       <div className="h-11 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-white/[0.02] shrink-0">
         <Settings size={14} className="text-zinc-400 shrink-0" />
         <div className="flex-1 min-w-0 truncate text-[12px] font-semibold text-zinc-400">AI assistant settings</div>

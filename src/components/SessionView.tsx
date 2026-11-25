@@ -166,7 +166,7 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
               ? { top: guideAt.bottom + 6 }
               : { bottom: window.innerHeight - guideAt.top + 6 }),
           }}
-          className="fixed z-[9999] pointer-events-none bg-[#15151a] border border-white/10 rounded-lg shadow-2xl px-3 py-2 text-[11px] leading-snug text-zinc-300"
+          className="fixed z-[9999] pointer-events-none bg-shade-15151a border border-white/10 rounded-lg shadow-2xl px-3 py-2 text-[11px] leading-snug text-zinc-300"
         >
           <div className="mb-1 text-[11px] font-semibold text-zinc-100">{t("Dedicated session")}</div>
           <p>{hint}</p>
@@ -1859,7 +1859,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       type="password"
       aria-label={t("Password")}
       placeholder={t("Try another password — press Enter to reconnect")}
-      className="h-8 w-full bg-[#1a1a1e] rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
+      className="h-8 w-full bg-shade-1a1a1e rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
       value={customPassword}
       onChange={e => setCustomPassword(e.target.value)}
       onKeyDown={e => {
@@ -1889,7 +1889,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     const retryWaiting = reconnectAttempt > 0 && nextReconnectAt !== null;
     const retryIn = <SecondsLeft until={nextReconnectAt ?? 0} />;
     return (
-      <div className="relative flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
+      <div className="relative flex-1 flex flex-col p-4 sm:p-8 bg-shade-0a0a0c text-white overflow-hidden">
         <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col min-h-0">
           {/* Header: status chip + server name on the left, actions on the
               right — one row at every width. The name is regular-case text
@@ -1990,7 +1990,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               const el = e.currentTarget;
               logFollowRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
             }}
-            className="flex-1 min-h-0 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono overflow-y-auto overscroll-contain custom-scrollbar shadow-inner relative select-text cursor-text"
+            className="flex-1 min-h-0 bg-shade-121214 border border-white/5 rounded-2xl p-4 font-mono overflow-y-auto overscroll-contain custom-scrollbar shadow-inner relative select-text cursor-text"
             style={{ WebkitOverflowScrolling: 'touch', fontSize: logFontSize, fontFamily: logFontFamily, lineHeight: 1.5 }}
           >
             {logs.map((l, i) => (
@@ -2033,7 +2033,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           full chrome and 2-3 sessions side-by-side would fight for
           vertical space with duplicate toolbars. */}
       {!chromeless && (
-      <div inert={shellSyncOpen ? "" : undefined} className="h-12 border-b border-white/5 bg-[#141417] flex items-center px-2 sm:px-4 shrink-0 justify-between gap-1">
+      <div inert={shellSyncOpen ? "" : undefined} className="h-12 border-b border-white/5 bg-shade-141417 flex items-center px-2 sm:px-4 shrink-0 justify-between gap-1">
         <div
           className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 mr-1 sm:mr-4 mask-fade-right"
           onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
@@ -2256,7 +2256,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               else if (e.key === 'Tab') { e.preventDefault(); closePlusMenu(); }
             }}
             style={{ left: Math.min(plusMenu.x, window.innerWidth - 260), top: Math.min(plusMenu.y, window.innerHeight - 220) }}
-            className="fixed z-[9999] w-[240px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
+            className="fixed z-[9999] w-[240px] bg-shade-15151a border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
           >
             {!isCompact && (
               <>
@@ -2370,7 +2370,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           />
           <div
             style={{ left: Math.min(termMenu.x, window.innerWidth - 240), top: Math.min(termMenu.y, window.innerHeight - 80) }}
-            className="fixed z-[9999] w-[220px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
+            className="fixed z-[9999] w-[220px] bg-shade-15151a border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
           >
             {termRename === termMenu.termId ? (
               <RenameInput
@@ -2412,7 +2412,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             role="menu"
             aria-label={t("Panel position")}
             style={{ left: Math.max(8, Math.min(dockMenu.x - 210, window.innerWidth - 218)), top: Math.min(dockMenu.y, window.innerHeight - 170) }}
-            className="fixed z-[9999] w-[210px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
+            className="fixed z-[9999] w-[210px] bg-shade-15151a border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
           >
             <div className="px-3 pt-1 pb-1.5 text-[11px] font-semibold text-zinc-500">{t("Panel position")}</div>
             {DOCK_OPTIONS.map(({ id, label, Icon }) => (
@@ -2549,7 +2549,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
         ref={mainAreaRef}
         // Behind the push dialog: Tab can't reach the terminal under it.
         inert={shellSyncOpen ? "" : undefined}
-        className={`flex-1 flex overflow-hidden relative bg-[#09090b] ${toolAlone ? "" : DOCK_FLEX[toolDock]}`}
+        className={`flex-1 flex overflow-hidden relative bg-shade-09090b ${toolAlone ? "" : DOCK_FLEX[toolDock]}`}
       >
         {/* Left Panel: Active Terminals.
             With a tool open in a compact window, or made full screen, hide
@@ -2589,7 +2589,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 style={inSplit ? paneBox(panes[slot], splitOrientation) : undefined}
                 onMouseDown={inSplit ? () => setActiveTab(term.id) : undefined}
                 onTouchStart={inSplit ? () => setActiveTab(term.id) : undefined}
-                className={`absolute ${
+                className={`theme-dark absolute ${
                   inSplit
                     ? `z-10 border ${
                         isFocused
@@ -2752,7 +2752,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 ? { height: `${toolPanelHeight}px`, maxHeight: `calc(100% - ${MIN_TERMINAL_HEIGHT + 4}px)` }
                 : { width: `${activeTool === 'ai' ? aiPanelWidth : toolPanelWidth}px`, maxWidth: `calc(100% - ${MIN_TERMINAL_WIDTH + 4}px)` })
             : undefined}
-          className={`${activeTool ? (toolAlone ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col ${dockTopBottom && !toolAlone ? 'w-full' : 'h-full'} overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
+          className={`${activeTool ? (toolAlone ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-shade-121214/95 flex flex-col ${dockTopBottom && !toolAlone ? 'w-full' : 'h-full'} overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
         >
           {activeTool === 'sftp' && (
             <div className="flex-1 flex flex-col overflow-hidden">
@@ -2915,7 +2915,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             <div
               ref={shellSyncPanelRef}
               tabIndex={-1}
-              className="max-w-xl w-full mt-6 sm:mt-12 bg-[#121215] border border-white/10 rounded-2xl shadow-2xl overflow-hidden outline-none"
+              className="max-w-xl w-full mt-6 sm:mt-12 bg-shade-121215 border border-white/10 rounded-2xl shadow-2xl overflow-hidden outline-none"
             >
               <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">

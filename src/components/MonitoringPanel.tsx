@@ -434,7 +434,7 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
   // ---- render -----------------------------------------------------------------
 
   return (
-    <div className="flex flex-col h-full bg-[#09090b] relative">
+    <div className="flex flex-col h-full bg-shade-09090b relative">
       {/* Header — labels collapse to icon-only on narrow viewports so the
           control row never wraps into the title. The subtitle hides at the
           same breakpoint since it's the lowest-value piece of chrome. */}
@@ -555,7 +555,7 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
       {/* Add modal */}
       {addOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3" onClick={() => setAddOpen(false)}>
-          <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-shade-121214 border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
               <span className="text-[12px] font-semibold text-white">{t("Add node to monitor")}</span>
               <button aria-label={t("Close")} onClick={() => setAddOpen(false)} className="text-zinc-400 hover:text-white"><X size={16} /></button>
@@ -641,7 +641,7 @@ const ServerCard = ({ row, sample, history, busy, onPause, onResume, onConfig, o
   const customCells = row.custom_metrics.map((cm) => ({ kind: "custom" as const, cm }));
 
   return (
-    <div className={`bg-[#0f0f12] border ${cardBorder} rounded-lg p-2.5 flex flex-col gap-1.5`}>
+    <div className={`bg-shade-0f0f12 border ${cardBorder} rounded-lg p-2.5 flex flex-col gap-1.5`}>
       {/* Header — name + chip + actions on one row, host/age below */}
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -818,7 +818,7 @@ const SettingsModal = ({ onClose, onSaved }: {
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3" onClick={onClose}>
-      <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-shade-121214 border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
           <span className="text-[12px] font-semibold text-white flex items-center gap-2">
             <SettingsIcon size={13} className="text-primary" /> {t("Monitor settings")}
@@ -991,7 +991,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end" onClick={onClose}>
-      <div className="w-full max-w-[480px] bg-[#121214] border-l border-white/10 h-full flex flex-col" onClick={(e) => e.stopPropagation()}>
+      <div className="w-full max-w-[480px] bg-shade-121214 border-l border-white/10 h-full flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between">
           <div>
             <div className="text-[12px] font-semibold text-white">{t("Configure")}</div>
@@ -1066,9 +1066,9 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                         <select value={cm.parse}
                           onChange={(e) => updateDraft(idx, { parse: e.target.value as any })}
                           className="w-full h-7 px-1.5 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 outline-none">
-                          <option className="bg-[#1a1a1e]" value="number">{t("First number")}</option>
-                          <option className="bg-[#1a1a1e]" value="regex">{t("Regex capture")}</option>
-                          <option className="bg-[#1a1a1e]" value="text">{t("Raw text")}</option>
+                          <option className="bg-shade-1a1a1e" value="number">{t("First number")}</option>
+                          <option className="bg-shade-1a1a1e" value="regex">{t("Regex capture")}</option>
+                          <option className="bg-shade-1a1a1e" value="text">{t("Raw text")}</option>
                         </select>
                       </label>
                       <label className="space-y-1">
@@ -1077,9 +1077,9 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                           onChange={(e) => updateDraft(idx, { display: e.target.value as any })}
                           disabled={cm.parse === "text"}
                           className="w-full h-7 px-1.5 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 outline-none disabled:opacity-50">
-                          <option className="bg-[#1a1a1e]" value="sparkline">{t("Sparkline")}</option>
-                          <option className="bg-[#1a1a1e]" value="big_number">{t("Big number")}</option>
-                          <option className="bg-[#1a1a1e]" value="text">{t("Text")}</option>
+                          <option className="bg-shade-1a1a1e" value="sparkline">{t("Sparkline")}</option>
+                          <option className="bg-shade-1a1a1e" value="big_number">{t("Big number")}</option>
+                          <option className="bg-shade-1a1a1e" value="text">{t("Text")}</option>
                         </select>
                       </label>
                       <label className="space-y-1">

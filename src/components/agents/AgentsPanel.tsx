@@ -147,7 +147,7 @@ export const AgentsPanel = ({ active, servers, openSessions, serverNames, onOpen
         </div>
 
         {(!ov.enabled || ov.error || !ov.profile_open) && (
-          <div className="bg-[#121215] border border-white/5 rounded-2xl p-4 text-[12px] text-zinc-400 leading-relaxed space-y-2">
+          <div className="bg-shade-121215 border border-white/5 rounded-2xl p-4 text-[12px] text-zinc-400 leading-relaxed space-y-2">
             {!ov.enabled && <p>Agents can't reach Submarine: the switch in Settings → AI agents is off.</p>}
             {ov.enabled && !ov.profile_open && <p>Open a profile: agents can only ask while one is open.</p>}
             {ov.error && <p className="text-amber-300">{ov.error}</p>}
@@ -198,7 +198,7 @@ export const AgentsPanel = ({ active, servers, openSessions, serverNames, onOpen
         <Section title="Activity">
           {events.length === 0 && <Empty>Nothing yet.</Empty>}
           {events.length > 0 && (
-            <ul className="divide-y divide-white/5 bg-[#121215] border border-white/5 rounded-2xl">
+            <ul className="divide-y divide-white/5 bg-shade-121215 border border-white/5 rounded-2xl">
               {events.map((e) => (
                 <li key={e.id} className="px-4 py-2 text-[12px] flex gap-3 items-baseline">
                   <span className="text-zinc-500 tabular-nums shrink-0">{timeText(e.at)}</span>
@@ -359,7 +359,7 @@ const RequestCard = ({ req, conn, offered, longest, servers, openSessions, onOpe
     });
 
   return (
-    <div data-agent-request={req.id} className="bg-[#121215] border border-primary/30 rounded-2xl p-4 space-y-4">
+    <div data-agent-request={req.id} className="bg-shade-121215 border border-primary/30 rounded-2xl p-4 space-y-4">
       <div className="flex items-start gap-3">
         <ShieldCheck size={18} className="text-primary shrink-0 mt-0.5" />
         <div className="min-w-0 flex-1 space-y-3">
@@ -493,7 +493,7 @@ const RequestCard = ({ req, conn, offered, longest, servers, openSessions, onOpe
 const ConnectionBlock = ({ conn, grants, serverNames, onError }: { conn: AgentConnection; grants: GatewayOverview["grants"]; serverNames: Record<string, string>; onError: (e: string | null) => void }) => {
   const act = (p: Promise<void>) => p.then(() => onError(null), (e) => onError(errText(e)));
   return (
-    <div data-agent-connection={conn.id} className="bg-[#121215] border border-white/5 rounded-2xl p-4 space-y-3">
+    <div data-agent-connection={conn.id} className="bg-shade-121215 border border-white/5 rounded-2xl p-4 space-y-3">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <Who conn={conn} />

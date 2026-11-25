@@ -26,6 +26,7 @@ import { useIsNarrow } from "./hooks/useViewport";
 import { IS_MOBILE } from "./util/platform";
 import { FONT_FAMILY_KEY, FONT_SIZE_KEY, FONT_SIZE_REQUEST, readFontFamily, readFontSize, requestedFontSize } from "./util/terminalFont";
 import { UI_FONT_FAMILY_KEY, applyFonts, readUiFontFamily } from "./util/uiFont";
+import { BG_COLOR_KEY, PRIMARY_COLOR_KEY, applyTheme, readBackgroundColor, readPrimaryColor } from "./util/appTheme";
 import { SCROLLBACK_KEY, readScrollback } from "./util/terminalScrollback";
 import {
   BOLD_BRIGHT_KEY, CUSTOM_THEME_KEY, MIN_CONTRAST_KEY, THEME_KEY,
@@ -127,13 +128,6 @@ function sessionOf(server: any): Session {
     runOnConnectHeld: (server.held || []).includes("run_on_connect"),
   };
 }
-
-const hexToRgb = (hex: string) => {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `${r} ${g} ${b}`;
-};
 
 function DesktopApp() {
   const t = useT();
@@ -546,8 +540,8 @@ function DesktopApp() {
     return () => clearTimeout(t);
   }, [isKeyPanelOpen]);
   const [appSettings, setAppSettings] = useState({
-    primaryColor: localStorage.getItem('submarine-primary-color') || '#60a5fa',
-    backgroundColor: localStorage.getItem('submarine-bg-color') || '#0a0a0c',
+    primaryColor: readPrimaryColor(),
+    backgroundColor: readBackgroundColor(),
     terminalFontSize: readFontSize(),
     // '' = the built-in cross-platform monospace stack (see util/terminalFont).
     terminalFontFamily: readFontFamily(),
@@ -590,12 +584,9 @@ function DesktopApp() {
   });
 
   useEffect(() => {
-    const rgb = hexToRgb(appSettings.primaryColor);
-    document.documentElement.style.setProperty('--primary', rgb);
-    document.documentElement.style.setProperty('--primary-hex', appSettings.primaryColor);
-    document.documentElement.style.setProperty('--background', appSettings.backgroundColor);
-    localStorage.setItem('submarine-primary-color', appSettings.primaryColor);
-    localStorage.setItem('submarine-bg-color', appSettings.backgroundColor);
+    applyTheme(appSettings.primaryColor, appSettings.backgroundColor);
+    localStorage.setItem(PRIMARY_COLOR_KEY, appSettings.primaryColor);
+    localStorage.setItem(BG_COLOR_KEY, appSettings.backgroundColor);
     localStorage.setItem(FONT_SIZE_KEY, appSettings.terminalFontSize.toString());
     localStorage.setItem(FONT_FAMILY_KEY, appSettings.terminalFontFamily);
     localStorage.setItem(UI_FONT_FAMILY_KEY, appSettings.uiFontFamily);
@@ -1841,7 +1832,7 @@ function DesktopApp() {
         if (IS_MOBILE || target.closest('.no-drag')) return;
         toggleMaximize();
       }}
-      className="h-10 bg-[#08080a] flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
+      className="h-10 bg-shade-08080a flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
     >
       {/* The bar's bottom edge, drawn under the tabs: the open tab covers it
           and joins the session's toolbar below. */}
@@ -1914,7 +1905,7 @@ function DesktopApp() {
                 <div className="fixed inset-0 z-[60]" onClick={() => setMobileSessionPickerOpen(false)} />
                 <div
                   role="listbox"
-                  className="absolute z-[70] top-8 left-0 right-0 bg-[#15151a] border border-white/10 rounded-xl shadow-2xl p-1.5 max-h-[60vh] overflow-y-auto custom-scrollbar"
+                  className="absolute z-[70] top-8 left-0 right-0 bg-shade-15151a border border-white/10 rounded-xl shadow-2xl p-1.5 max-h-[60vh] overflow-y-auto custom-scrollbar"
                 >
                   {orderedSessions.map(s => {
                     const st = sessionStatuses[s.id] ?? 'connecting';
@@ -2139,7 +2130,7 @@ function DesktopApp() {
               title={isMergedTab ? t("{name} · split beside current view (Ctrl-click to unpair)", { name: fullLabel }) : fullLabel}
               className={`group no-drag relative flex items-center gap-2 h-[33px] pl-3 pr-1.5 rounded-t-lg cursor-pointer shrink-0 transition-colors ${
                 active
-                  ? 'z-10 bg-[#141417] text-zinc-100 border-x border-t border-white/10'
+                  ? 'z-10 bg-shade-141417 text-zinc-100 border-x border-t border-white/10'
                   : isMergedTab
                     ? 'text-primary/90 bg-primary/[0.06] hover:bg-primary/10'
                     : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]'
@@ -2227,7 +2218,7 @@ function DesktopApp() {
           onClick={() => scrollTabs(-1)}
           title={t("Show the tabs to the left")}
           aria-label={t("Show the tabs to the left")}
-          className="no-drag absolute left-0 bottom-0 z-20 h-[33px] w-8 flex items-center justify-start pl-1 text-zinc-300 hover:text-white bg-gradient-to-r from-[#08080a] via-[#08080a]/90 to-transparent"
+          className="no-drag absolute left-0 bottom-0 z-20 h-[33px] w-8 flex items-center justify-start pl-1 text-zinc-300 hover:text-white bg-gradient-to-r from-shade-08080a via-shade-08080a/90 to-transparent"
         >
           <ChevronLeft size={15} />
         </button>
@@ -2238,7 +2229,7 @@ function DesktopApp() {
           onClick={() => scrollTabs(1)}
           title={t("Show the tabs to the right")}
           aria-label={t("Show the tabs to the right")}
-          className="no-drag absolute right-0 bottom-0 z-20 h-[33px] w-8 flex items-center justify-end pr-1 text-zinc-300 hover:text-white bg-gradient-to-l from-[#08080a] via-[#08080a]/90 to-transparent"
+          className="no-drag absolute right-0 bottom-0 z-20 h-[33px] w-8 flex items-center justify-end pr-1 text-zinc-300 hover:text-white bg-gradient-to-l from-shade-08080a via-shade-08080a/90 to-transparent"
         >
           <ChevronRight size={15} />
         </button>
@@ -2356,7 +2347,7 @@ function DesktopApp() {
                 className="fixed inset-0 z-[60]"
                 onClick={() => setBroadcastMenuOpen(false)}
               />
-              <div className="absolute z-[70] top-full mt-1 right-0 w-[280px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl p-2 text-[11px]">
+              <div className="absolute z-[70] top-full mt-1 right-0 w-[280px] bg-shade-15151a border border-white/10 rounded-lg shadow-2xl p-2 text-[11px]">
                 <div className="flex items-center justify-between mb-2 px-1">
                   <label className="flex items-center gap-2 cursor-pointer select-none">
                     <input
@@ -2483,7 +2474,7 @@ function DesktopApp() {
         <>
           <div className="fixed inset-0 z-[60]" onClick={() => { setTabMenu(null); setTabRename(null); }} onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); setTabRename(null); }} />
           <div
-            className="fixed z-[70] bg-[#15151a] border border-white/10 rounded-md shadow-2xl py-1 min-w-[240px] text-[11px] no-drag"
+            className="fixed z-[70] bg-shade-15151a border border-white/10 rounded-md shadow-2xl py-1 min-w-[240px] text-[11px] no-drag"
             style={{ left: Math.min(tabMenu.x, window.innerWidth - 260), top: Math.min(tabMenu.y, window.innerHeight - 380) }}
           >
             {/* The tab's name. The editor opens inside this menu: Enter
@@ -2816,7 +2807,7 @@ function DesktopApp() {
                         <div className="col-span-full py-10 text-center text-zinc-600 text-[14px] italic border border-dashed border-white/5 rounded-2xl">{t("Nothing here yet.")}</div>
                       ) : (
                         credentials.map(c => (
-                          <div key={c.id} className="bg-[#16161a] border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
+                          <div key={c.id} className="bg-shade-16161a border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{c.name}</h4>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity absolute right-3 top-3">
@@ -2861,7 +2852,7 @@ function DesktopApp() {
                         <div className="col-span-full py-10 text-center text-zinc-600 text-[14px] italic border border-dashed border-white/5 rounded-2xl">{t("No keys saved yet.")}</div>
                       ) : (
                         sshKeys.map((k: any) => (
-                          <div key={k.id} className="bg-[#16161a] border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
+                          <div key={k.id} className="bg-shade-16161a border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{k.name}</h4>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity absolute right-3 top-3">
@@ -2998,7 +2989,7 @@ function DesktopApp() {
                               merged tile drops from ~48 px (full chrome)
                               to ~28 px (slim header). */}
                           {isVisible && isTiled && !isFocused && (
-                            <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#111114] text-[10.5px]">
+                            <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-shade-111114 text-[10.5px]">
                               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                 (sessionStatuses[sess.id] ?? 'connecting') === 'connected' ? 'bg-emerald-400' :
                                 (sessionStatuses[sess.id] ?? 'connecting') === 'connecting' ? 'bg-amber-400' :
@@ -3108,12 +3099,12 @@ function DesktopApp() {
                 PTY ownership stay with the primary xterm in the
                 session tab. */}
             {activeView === "wall" && (
-              <div className="absolute inset-0 flex flex-col overflow-hidden bg-[#0a0a0d]">
+              <div className="absolute inset-0 flex flex-col overflow-hidden bg-shade-0a0a0d">
                 {/* Toolbar: cols and rows selectors + Add + Clear. Rows
                     default to as many as the tiles need; a number fits
                     that many on screen. On a narrow screen the selectors
                     scroll sideways. */}
-                <div className="h-10 shrink-0 border-b border-white/5 bg-[#111114] flex items-center gap-2 px-3">
+                <div className="h-10 shrink-0 border-b border-white/5 bg-shade-111114 flex items-center gap-2 px-3">
                   <LayoutGrid size={12} className="text-primary/70 shrink-0" />
                   <span className="text-[11px] font-semibold text-zinc-400 shrink-0">
                     {wallItems.length > 0 ? t("Wall · {count}", { count: wallItems.length }) : t("Wall")}
@@ -3208,13 +3199,13 @@ function DesktopApp() {
                         return (
                           <div
                             key={item.id}
-                            className="flex flex-col overflow-hidden border border-white/10 rounded-md bg-[#09090b] shadow-[0_2px_10px_rgba(0,0,0,0.4)] hover:border-primary/30 transition-colors"
+                            className="flex flex-col overflow-hidden border border-white/10 rounded-md bg-shade-09090b shadow-[0_2px_10px_rgba(0,0,0,0.4)] hover:border-primary/30 transition-colors"
                           >
                             {/* Slim tile header — server + terminal
                                 title, quick-jump into the session,
                                 unpin. Terminal body below owns focus
                                 so keystrokes go to xterm directly. */}
-                            <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#141418] text-[10.5px] select-none">
+                            <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-shade-141418 text-[10.5px] select-none">
                               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotTone}`} />
                               <span className="font-semibold text-zinc-200 truncate">
                                 {tabLabel(sess)}
@@ -3277,7 +3268,7 @@ function DesktopApp() {
                 {wallPickerOpen && (
                   <>
                     <div className="fixed inset-0 z-[65]" onClick={() => setWallPickerOpen(false)} />
-                    <div className="absolute top-12 right-3 z-[66] w-80 max-h-[70vh] bg-[#15151a] border border-white/10 rounded-xl shadow-2xl p-2 flex flex-col">
+                    <div className="absolute top-12 right-3 z-[66] w-80 max-h-[70vh] bg-shade-15151a border border-white/10 rounded-xl shadow-2xl p-2 flex flex-col">
                       <div className="px-2 pb-2 flex items-center justify-between shrink-0">
                         <span className="text-[11px] font-semibold text-zinc-500">
                           {t("Pin terminals")}
@@ -3470,7 +3461,7 @@ function DesktopApp() {
                         </div>
                       ) : (
                         filteredCommands.map(cmd => (
-                          <div key={cmd.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[150px]">
+                          <div key={cmd.id} className="bg-shade-16161a border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[150px]">
                             <div className="flex justify-between items-start mb-2">
                               <h3 className="text-[16px] font-bold text-primary tracking-tight truncate flex-1 flex items-center gap-1.5">
                                 {cmd.is_secret && <Lock size={13} className="text-amber-400 shrink-0" />}
@@ -3515,7 +3506,7 @@ function DesktopApp() {
                         </div>
                       ) : (
                         filteredNotes.map(n => (
-                          <div key={n.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[170px]">
+                          <div key={n.id} className="bg-shade-16161a border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[170px]">
                             <div className="flex justify-between items-start mb-2 gap-2">
                               <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || t("Untitled")}</h3>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity shrink-0">
@@ -3885,7 +3876,7 @@ function DesktopApp() {
           then, so Tab can't reach their fields. */}
       <ErrorBoundary overlay label={t("Command form")} onReset={() => setIsCommandPanelOpen(false)}><Guarded render={() => (
       <div inert={isCommandPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCommandPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...commandForm.backdropProps}>
-        <div ref={commandPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCommandPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
+        <div ref={commandPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-shade-09090b border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCommandPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <TerminalSquare size={18} className="text-primary" />
@@ -3968,7 +3959,7 @@ function DesktopApp() {
 
       <ErrorBoundary overlay label={t("Note form")} onReset={() => setIsNotePanelOpen(false)}><Guarded render={() => (
       <div inert={isNotePanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isNotePanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...noteForm.backdropProps}>
-        <div ref={notePanelRef} tabIndex={-1} className={`w-full max-w-[480px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isNotePanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
+        <div ref={notePanelRef} tabIndex={-1} className={`w-full max-w-[480px] bg-shade-09090b border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isNotePanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <StickyNote size={18} className="text-primary" />
@@ -4003,7 +3994,7 @@ function DesktopApp() {
 
       <ErrorBoundary overlay label={t("Login form")} onReset={() => setIsCredPanelOpen(false)}><Guarded render={() => (
       <div inert={isCredPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCredPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...credForm.backdropProps}>
-        <div ref={credPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCredPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
+        <div ref={credPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-shade-09090b border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCredPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <Shield size={18} className="text-primary" />
@@ -4031,8 +4022,8 @@ function DesktopApp() {
                   value={editCredData.auth_type || "password"}
                   onChange={e => setEditCredData({ ...editCredData, auth_type: e.target.value })}
                 >
-                  <option value="password" className="bg-[#121215] text-primary">{t("Password")}</option>
-                  <option value="key" className="bg-[#121215] text-primary">{t("SSH key")}</option>
+                  <option value="password" className="bg-shade-121215 text-primary">{t("Password")}</option>
+                  <option value="key" className="bg-shade-121215 text-primary">{t("SSH key")}</option>
                 </select>
               </div>
             </div>
@@ -4076,7 +4067,7 @@ function DesktopApp() {
 
       <ErrorBoundary overlay label={t("Key form")} onReset={() => setIsKeyPanelOpen(false)}><Guarded render={() => (
       <div inert={isKeyPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isKeyPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...keyForm.backdropProps}>
-        <div ref={keyPanelRef} tabIndex={-1} className={`w-full max-w-[450px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isKeyPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
+        <div ref={keyPanelRef} tabIndex={-1} className={`w-full max-w-[450px] bg-shade-09090b border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isKeyPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <Key size={18} className="text-primary" />

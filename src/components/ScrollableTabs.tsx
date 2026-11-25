@@ -100,7 +100,7 @@ export function ScrollableTabs<T extends string>({ children, trailing, className
             className="w-full h-8 sm:h-7 px-2 rounded-lg bg-primary/10 text-primary border border-primary/20 text-[11px] font-semibold tracking-tight focus:outline-none focus:border-primary/50 cursor-pointer"
           >
             {select.options.map((o) => (
-              <option key={o.value} value={o.value} className="bg-[#1a1a1e] text-zinc-200">{o.label}</option>
+              <option key={o.value} value={o.value} className="bg-shade-1a1a1e text-zinc-200">{o.label}</option>
             ))}
           </select>
         )}

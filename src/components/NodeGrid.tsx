@@ -657,12 +657,12 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
         onClick={open}
         className={listView
           ? 'group relative flex items-center gap-3 h-14 pl-7 pr-1 border-t border-white/5 first:border-t-0 active:bg-white/[0.03] cursor-pointer'
-          : 'group relative flex items-center gap-3 h-16 pl-6 pr-2 rounded-xl bg-gradient-to-br from-[#17171c] to-[#121216] border border-white/5 hover:border-primary/40 hover:bg-white/[0.015] transition-colors duration-150 cursor-pointer overflow-hidden'}
+          : 'group relative flex items-center gap-3 h-16 pl-6 pr-2 rounded-xl bg-gradient-to-br from-shade-17171c to-shade-121216 border border-white/5 hover:border-primary/40 hover:bg-white/[0.015] transition-colors duration-150 cursor-pointer overflow-hidden'}
       >
         {grip}
         <div className={`relative ${listView ? 'w-8 h-8' : 'w-9 h-9'} rounded-lg border flex items-center justify-center shrink-0`} style={avatarStyle(s.color)}>
           <Icon size={listView ? 14 : 16} />
-          {tabDot(tab, listView ? 'border-[#121216]' : 'border-[#16161b]')}
+          {tabDot(tab, listView ? 'border-shade-121216' : 'border-shade-16161b')}
         </div>
         <div className="min-w-0 flex-1">
           {name}
@@ -672,7 +672,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
             <span className="text-[10.5px] text-zinc-300 font-mono truncate">{address(s)}</span>
           </div>
         </div>
-        <div className={`flex items-center gap-0.5 shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 [@media(hover:none)]:!opacity-100 sm:absolute sm:right-1.5 sm:top-1/2 sm:-translate-y-1/2 sm:pl-8 sm:bg-gradient-to-l sm:from-[#121216] sm:via-[#121216] sm:to-transparent transition-all duration-200 ${aiMenuOpen ? '!opacity-100' : ''}`}>
+        <div className={`flex items-center gap-0.5 shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 [@media(hover:none)]:!opacity-100 sm:absolute sm:right-1.5 sm:top-1/2 sm:-translate-y-1/2 sm:pl-8 sm:bg-gradient-to-l sm:from-shade-121216 sm:via-shade-121216 sm:to-transparent transition-all duration-200 ${aiMenuOpen ? '!opacity-100' : ''}`}>
           {buttons}
         </div>
       </div>
@@ -831,7 +831,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
         key={`folder-${f.id}`}
         data-drop-folder={f.id}
         onClick={openFolder}
-        className={`group relative flex items-center gap-3 h-16 pl-6 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border transition-colors duration-150 cursor-pointer overflow-hidden ${
+        className={`group relative flex items-center gap-3 h-16 pl-6 pr-2 rounded-xl bg-gradient-to-br from-shade-1c1c22 to-shade-141418 border transition-colors duration-150 cursor-pointer overflow-hidden ${
           isTarget ? 'border-primary ring-2 ring-primary/60 bg-primary/10' : 'border-white/5 hover:border-primary/40 hover:bg-white/[0.015]'
         } ${isDragged ? 'opacity-40' : ''}`}
       >
@@ -849,7 +849,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
         {isRenaming ? renameButtons : (
           <div className="relative flex items-center shrink-0">
             <span className="text-[10px] bg-black/60 text-zinc-400 px-1.5 py-0.5 rounded-md font-mono group-hover:opacity-0 group-has-[:focus-visible]:opacity-0 transition-opacity">{serverCount}</span>
-            <div className="absolute right-0 flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 [@media(hover:none)]:!opacity-100 transition-all bg-gradient-to-l from-[#16161b] via-[#16161b] to-transparent pl-6">
+            <div className="absolute right-0 flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 [@media(hover:none)]:!opacity-100 transition-all bg-gradient-to-l from-shade-16161b via-shade-16161b to-transparent pl-6">
               {buttons}
             </div>
           </div>
@@ -863,7 +863,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
   const newFolderDraft = !isSearching && newFolder !== null && (
     <div className={listView
       ? 'relative flex items-center gap-3 h-14 pl-7 pr-2 border-t border-white/5 first:border-t-0 bg-primary/[0.04]'
-      : 'relative flex items-center gap-3 h-16 pl-6 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border border-primary/40 overflow-hidden'}>
+      : 'relative flex items-center gap-3 h-16 pl-6 pr-2 rounded-xl bg-gradient-to-br from-shade-1c1c22 to-shade-141418 border border-primary/40 overflow-hidden'}>
       <div className={`${listView ? 'w-8 h-8' : 'w-9 h-9'} rounded-lg border flex items-center justify-center shrink-0`} style={avatarStyle(null)}>
         <FolderPlus size={listView ? 14 : 16} />
       </div>
@@ -969,7 +969,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
             type="text"
             aria-label={t("Search servers…")}
             placeholder={t("Search servers…")}
-            className="w-full h-10 sm:h-8 bg-[#1c1c21] border border-white/10 rounded-lg pl-9 pr-8 text-[13px] text-zinc-100 outline-none focus:border-primary/50 focus:bg-[#16161a] transition-all placeholder:text-zinc-600 shadow-inner"
+            className="w-full h-10 sm:h-8 bg-shade-1c1c21 border border-white/10 rounded-lg pl-9 pr-8 text-[13px] text-zinc-100 outline-none focus:border-primary/50 focus:bg-shade-16161a transition-all placeholder:text-zinc-600 shadow-inner"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => {
@@ -1135,7 +1135,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
             </button>
           </div>
         ) : listView ? (
-          <div className="rounded-xl border border-white/5 bg-[#121216] overflow-hidden">
+          <div className="rounded-xl border border-white/5 bg-shade-121216 overflow-hidden">
             {!isMobile && (
               <div className={`${LIST_COLS} h-8 pl-7 pr-2 border-b border-white/5 bg-white/[0.02] text-[11px] font-semibold text-zinc-500`}>
                 <span>{t("Name")}</span>
@@ -1183,7 +1183,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
           {(() => {
             const Icon = PROTOCOL_ICON[protocolOf(draggedServer)];
             return (
-              <div className={`relative flex items-center gap-3 ${listView ? 'h-11 pl-7 rounded-lg bg-[#1b1b20]' : 'h-16 pl-6 rounded-xl bg-gradient-to-br from-[#1b1b20] to-[#141418]'} pr-2 border border-primary/50 ring-1 ring-primary/40 shadow-2xl shadow-black/60 overflow-hidden`}>
+              <div className={`relative flex items-center gap-3 ${listView ? 'h-11 pl-7 rounded-lg bg-shade-1b1b20' : 'h-16 pl-6 rounded-xl bg-gradient-to-br from-shade-1b1b20 to-shade-141418'} pr-2 border border-primary/50 ring-1 ring-primary/40 shadow-2xl shadow-black/60 overflow-hidden`}>
                 <div className={`${listView ? 'w-6 h-6 rounded-md' : 'w-9 h-9 rounded-lg'} border flex items-center justify-center shrink-0`} style={avatarStyle(draggedServer.color)}>
                   <Icon size={listView ? 12 : 16} />
                 </div>
@@ -1211,7 +1211,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
             transform: `translate(${pointerRef.current.x - grabOffsetRef.current.x}px, ${pointerRef.current.y - grabOffsetRef.current.y}px) ${tilt()}`,
           }}
         >
-          <div className={`relative flex items-center gap-3 ${listView ? 'h-11 pl-7 rounded-lg bg-[#1f1f26]' : 'h-16 pl-6 rounded-xl bg-gradient-to-br from-[#1f1f26] to-[#16161b]'} pr-2 border border-primary/50 ring-1 ring-primary/40 shadow-2xl shadow-black/60 overflow-hidden`}>
+          <div className={`relative flex items-center gap-3 ${listView ? 'h-11 pl-7 rounded-lg bg-shade-1f1f26' : 'h-16 pl-6 rounded-xl bg-gradient-to-br from-shade-1f1f26 to-shade-16161b'} pr-2 border border-primary/50 ring-1 ring-primary/40 shadow-2xl shadow-black/60 overflow-hidden`}>
             <div className={`${listView ? 'w-6 h-6 rounded-md' : 'w-9 h-9 rounded-lg'} border flex items-center justify-center shrink-0`} style={avatarStyle(draggedFolder.color)}>
               <Folder size={listView ? 12 : 16} />
             </div>

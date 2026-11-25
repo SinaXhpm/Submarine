@@ -97,7 +97,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
         aria-modal="true"
         aria-labelledby="held-review-title"
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[560px] max-h-[80vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150"
+        className="w-full max-w-[560px] max-h-[80vh] flex flex-col bg-shade-121214 border border-white/10 rounded-xl shadow-2xl font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150"
       >
         <div className="flex items-start justify-between gap-3 p-4 pb-2">
           <div className="flex items-center gap-2">

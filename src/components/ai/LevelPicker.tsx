@@ -22,7 +22,7 @@ const isRed = (l: Level | null | undefined) => l === "auto" || l === "full";
 
 /** The level chip's colours. The background is opaque: a select's open list can take it. */
 export const levelChipClass = (level: Level): string =>
-  `${TONE[level]} ${level === "full" ? "bg-[#38141c]" : "bg-zinc-950"}`;
+  `${TONE[level]} ${level === "full" ? "bg-shade-38141c" : "bg-zinc-950"}`;
 
 /** What a change starts from: the level in effect and the saved one (and
  *  whether the server has files only, which changes what the dialogs say).
@@ -415,7 +415,7 @@ export const LevelMenu = ({ serverUuid, serverName, current, anchor, compact, on
         tabIndex={-1}
         onKeyDown={onKeyDown}
         style={pos ?? { left: -9999, top: -9999 }}
-        className="fixed z-[9997] w-60 max-w-[calc(100vw-1rem)] rounded-xl border border-white/10 bg-[#16161a] shadow-2xl shadow-black/60 p-1 text-[12px] outline-none"
+        className="fixed z-[9997] w-60 max-w-[calc(100vw-1rem)] rounded-xl border border-white/10 bg-shade-16161a shadow-2xl shadow-black/60 p-1 text-[12px] outline-none"
       >
         <div className="px-3 pt-1.5 pb-1 text-[11px] font-semibold text-zinc-500">AI permission level</div>
         {LEVELS.filter((l) => l.id !== "full").map((l) => {

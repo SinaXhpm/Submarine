@@ -479,7 +479,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
     // data-remote-keys: keys typed here are the remote desktop's, so the
     // app's own shortcuts (Ctrl+Tab between tabs) leave them alone.
     return (
-      <div ref={boxRef} data-remote-keys="" className="relative flex-1 min-h-0 w-full flex items-center justify-center bg-black overflow-hidden">
+      <div ref={boxRef} data-remote-keys="" className="theme-dark relative flex-1 min-h-0 w-full flex items-center justify-center bg-black overflow-hidden">
         <canvas
           ref={canvasRef}
           tabIndex={0}

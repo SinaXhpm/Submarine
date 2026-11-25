@@ -183,7 +183,7 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
       // safe area (older Android, desktop) and on browsers that don't
       // support env() — no visible effect there.
       style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 6px)' }}
-      className="shrink-0 flex flex-col gap-1 px-1.5 pt-1.5 bg-[#0c0c0e] border-t border-white/10"
+      className="shrink-0 flex flex-col gap-1 px-1.5 pt-1.5 bg-shade-0c0c0e border-t border-white/10"
     >
       {/* Above the main row, so that row doesn't move under the thumb. */}
       {showSecondRow && (

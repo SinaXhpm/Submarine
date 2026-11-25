@@ -1931,7 +1931,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       data-fs-pane={provider.id}
       data-fs-current-path={currentPath}
       data-elev={fit.elev}
-      className="group/pane flex-1 flex flex-col h-full bg-[#09090b] p-1.5 gap-1.5 overflow-hidden relative select-none"
+      className="group/pane flex-1 flex flex-col h-full bg-shade-09090b p-1.5 gap-1.5 overflow-hidden relative select-none"
     >
       {disabled && (
         <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono">
@@ -1974,7 +1974,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       {/* Header: the pane's name and buttons on top, the path on a row of
           its own so a long path stays readable even in a narrow pane. */}
       <div className={`w-full flex flex-col gap-1.5 p-1.5 border rounded-lg shrink-0 shadow-lg ${
-        rootMode ? "bg-rose-950/30 border-rose-500/40" : "bg-[#121214] border-white/5"
+        rootMode ? "bg-rose-950/30 border-rose-500/40" : "bg-shade-121214 border-white/5"
       }`}>
         {/* Three groups: who (the name, plus the pane's own control: Browse
             here, root/sudo on the remote side), where to go, what to make.
@@ -2056,7 +2056,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           {/* Both lists open under the buttons across the header's width, so
               neither is cut off by a narrow pane. */}
           {recentOpen && (recentShown.length > 0 || bookmarks.length > 0) && (
-            <div className="absolute top-full mt-1 inset-x-0 z-50 max-h-[320px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
+            <div className="absolute top-full mt-1 inset-x-0 z-50 max-h-[320px] overflow-y-auto bg-shade-0c0c0e/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
               {recentShown.length > 0 && (
                 <>
                   <div className="px-2 py-1 text-[11px] text-zinc-500 font-semibold">{t("Recent")}</div>
@@ -2073,7 +2073,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             </div>
           )}
           {IS_ANDROID && androidPickerOpen && androidQuickDirs && (
-            <div className="absolute top-full mt-1 inset-x-0 z-50 bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px]">
+            <div className="absolute top-full mt-1 inset-x-0 z-50 bg-shade-0c0c0e/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px]">
               {androidQuickDirs.length === 0 ? (
                 <div className="p-2 text-zinc-400 text-[10.5px]">
                   {t("No writable locations found. On Android 11+ shared storage requires SAF — the app can only read/write its own scoped storage directly.")}
@@ -2211,7 +2211,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <Search size={11} />
           </button>
           {inputFocused && suggestions.length > 0 && (
-            <div className="absolute top-[28px] left-0 right-0 max-h-[220px] overflow-y-auto z-50 bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
+            <div className="absolute top-[28px] left-0 right-0 max-h-[220px] overflow-y-auto z-50 bg-shade-0c0c0e/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
               {suggestions.map((s, idx) => (
                 <button key={s.path} onClick={() => pickSuggestion(s)}
                   className={`w-full flex items-center justify-between p-1.5 rounded text-left transition-colors ${
@@ -2235,7 +2235,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           sibling dirs; the X clears it, and Esc closes the row. Enter or ↓
           goes on to the rows that are left. */}
       {filterOpen && (
-        <div className="shrink-0 flex items-center gap-1 px-2 py-1 bg-[#0e0e10] border border-white/5 rounded text-[10.5px] font-mono">
+        <div className="shrink-0 flex items-center gap-1 px-2 py-1 bg-shade-0e0e10 border border-white/5 rounded text-[10.5px] font-mono">
           <Search size={11} className="text-zinc-500 shrink-0" />
           <input
             ref={filterInputRef}
@@ -2355,14 +2355,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        className={`flex-1 border rounded-lg bg-[#121214] flex flex-col overflow-y-auto overflow-x-hidden transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 outline-none focus-visible:border-indigo-400/70 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
+        className={`flex-1 border rounded-lg bg-shade-121214 flex flex-col overflow-y-auto overflow-x-hidden transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 outline-none focus-visible:border-indigo-400/70 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
       >
         {/* The rows' columns, lined up with them: its padding matches the
             list's and a row's own. In selection mode the box in front selects
             all, or clears the selection once everything is selected. */}
         <div
           style={{ gridTemplateColumns }}
-          className="grid gap-1.5 pl-4 pr-3.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 font-bold shrink-0 sticky top-0 z-10 shadow-md"
+          className="grid gap-1.5 pl-4 pr-3.5 bg-shade-161619 border-b border-white/5 font-mono text-[10.5px] text-zinc-300 font-bold shrink-0 sticky top-0 z-10 shadow-md"
         >
           {inMode && (
             <button
@@ -2425,7 +2425,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         return (
         <div ref={menuRef}
           style={{ top: contextMenu.y, left: contextMenu.x }}
-          className="fixed z-[9999] min-w-[180px] bg-[#0c0c0e] border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11.5px] text-zinc-200">
+          className="fixed z-[9999] min-w-[180px] bg-shade-0c0c0e border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11.5px] text-zinc-200">
 
           {/* Primary actions: open a folder or a local file, send what is
               selected to the other pane, live-edit a remote file. */}
@@ -2581,7 +2581,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         <div className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setModal(null)}>
           <div onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setModal(null); } }}
-            className="w-full max-w-[320px] bg-[#121214] border border-white/5 rounded-xl shadow-2xl p-4 font-mono text-[11px]">
+            className="w-full max-w-[320px] bg-shade-121214 border border-white/5 rounded-xl shadow-2xl p-4 font-mono text-[11px]">
             <div className="flex items-center justify-between mb-3">
               <span className="font-semibold text-zinc-300">
                 {modal.type === "rename" ? t("Rename") :
