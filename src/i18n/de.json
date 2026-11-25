@@ -2196,5 +2196,13 @@
   "Your profiles sync automatically once open — manage sync and sharing for a profile from its {profile} panel inside the app.": "Ihre Profile werden automatisch synchronisiert, sobald sie geöffnet sind – Synchronisierung und Teilen eines Profils verwalten Sie in der App im Bereich {profile}.",
   "Your saved passwords and SSH keys.": "Ihre gespeicherten Passwörter und SSH-Schlüssel.",
   "Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.": "Ihre gespeicherten Profile und Server sind nicht betroffen, aber Ihre offenen Sitzungen wurden dadurch geschlossen: Was in ihren Terminals lief, wurde beendet, und ihr Scrollback ist verloren. Neuladen behebt den Fehler fast immer und bringt Sie zurück zur Profilauswahl. Falls es immer wieder passiert, kopieren Sie beim Melden des Fehlers die Details unten.",
-  "ZRLE (any colour depth)": "ZRLE (jede Farbtiefe)"
+  "ZRLE (any colour depth)": "ZRLE (jede Farbtiefe)",
+  "Direct": "Direkt",
+  "Enter a Tailcat address beginning with tc": "Gib eine Tailcat-Adresse ein, die mit tc beginnt",
+  "Name and a valid Tailcat address are required.": "Name und eine gültige Tailcat-Adresse sind erforderlich.",
+  "not included in this build": "in diesem Build nicht enthalten",
+  "Tailcat": "Tailcat",
+  "This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.": "Diese Adresse ist ein geheimes Zugriffsmerkmal. Sie wird im verschlüsselten Profil gespeichert und mit diesem synchronisiert. Verwende sie nur in Profilen, denen du vertraust.",
+  "Transport": "Transport",
+  "Tailcat address": "Tailcat-Adresse"
 }

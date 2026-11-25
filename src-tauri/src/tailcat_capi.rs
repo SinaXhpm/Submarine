@@ -185,7 +185,8 @@ struct ClientInner {
 impl Drop for ClientInner {
     fn drop(&mut self) {
         if !self.closed.swap(true, Ordering::AcqRel) {
-            close_handle(self.handle);
+            let handle = self.handle;
+            std::thread::spawn(move || close_handle(handle));
         }
     }
 }
@@ -309,16 +310,16 @@ struct ConnectionInner {
 }
 
 impl ConnectionInner {
-    fn close(&self) {
-        if !self.closed.swap(true, Ordering::AcqRel) {
-            close_handle(self.handle);
-        }
-    }
-
     fn request_close(self: &Arc<Self>) {
         if !self.closed.swap(true, Ordering::AcqRel) {
             let handle = self.handle;
-            std::thread::spawn(move || close_handle(handle));
+            // Keep the owning client alive until libtailcat has closed its
+            // child connection; otherwise client teardown could race this call.
+            let client = self.client.clone();
+            std::thread::spawn(move || {
+                close_handle(handle);
+                drop(client);
+            });
         }
     }
 
@@ -387,7 +388,14 @@ impl ConnectionInner {
 
 impl Drop for ConnectionInner {
     fn drop(&mut self) {
-        self.close();
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            let handle = self.handle;
+            let client = self.client.clone();
+            std::thread::spawn(move || {
+                close_handle(handle);
+                drop(client);
+            });
+        }
     }
 }
 
@@ -430,7 +438,8 @@ impl TailcatStream {
                 let read = app_read.read(&mut buffer).await;
                 let Ok(count) = read else { break };
                 if count == 0 {
-                    write_connection.close_write();
+                    let current = write_connection.clone();
+                    let _ = tokio::task::spawn_blocking(move || current.close_write()).await;
                     break;
                 }
                 let bytes = buffer[..count].to_vec();

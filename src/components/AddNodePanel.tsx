@@ -727,7 +727,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <div className="space-y-1.5">
                 <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Transport")}</label>
                 <select className="w-full h-9 bg-shade-1a1a1e rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50" value={newNode.transport || "direct"} onChange={e => setNewNode({ ...newNode, transport: e.target.value, proxyType: e.target.value === "tailcat" ? "none" : newNode.proxyType, jumpHostId: e.target.value === "tailcat" ? "" : newNode.jumpHostId })}>
-                  <option value="direct">{t("Direct")}</option><option value="tailcat" disabled={!tailcatAvailable}>Tailcat{tailcatAvailable ? "" : " (not included in this build)"}</option>
+                  <option value="direct">{t("Direct")}</option><option value="tailcat" disabled={!tailcatAvailable}>{t("Tailcat")}{tailcatAvailable ? "" : ` (${t("not included in this build")})`}</option>
                 </select>
               </div>
             )}
@@ -942,7 +942,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               >
                 <option value="" className="bg-shade-1a1a1e text-zinc-500">{isSsh ? t("Direct — no jump host") : t("Direct — no SSH server")}</option>
                 {(servers || [])
-                  .filter((s: any) => s.id !== newNode.id && (s.protocol ?? "ssh") === "ssh")
+                  .filter((s: any) => s.id !== newNode.id && (s.protocol ?? "ssh") === "ssh" && (s.transport ?? "direct") !== "tailcat")
                   .map((s: any) => (
                     <option key={s.id} value={s.id.toString()} className="bg-shade-1a1a1e text-zinc-300">
                       {s.name} ({s.host})

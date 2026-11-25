@@ -2249,5 +2249,13 @@
   "Your profiles sync automatically once open — manage sync and sharing for a profile from its {profile} panel inside the app.": "Ваші профілі синхронізуються автоматично після відкриття — керувати синхронізацією та спільним доступом до профілю можна на його панелі «{profile}» у застосунку.",
   "Your saved passwords and SSH keys.": "Ваші збережені паролі та SSH-ключі.",
   "Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.": "Ваші збережені профілі й сервери не зачеплено, але відкриті сеанси закрито: усе, що виконувалося в їхніх терміналах, завершено, а буфер прокручування втрачено. Перезавантаження майже завжди усуває помилку й повертає вас до вибору профілю. Якщо це повторюється, скопіюйте відомості нижче, коли повідомлятимете про помилку.",
-  "ZRLE (any colour depth)": "ZRLE (будь-яка глибина кольору)"
+  "ZRLE (any colour depth)": "ZRLE (будь-яка глибина кольору)",
+  "Direct": "Напряму",
+  "Enter a Tailcat address beginning with tc": "Введіть адресу Tailcat, що починається з tc",
+  "Name and a valid Tailcat address are required.": "Потрібні назва та дійсна адреса Tailcat.",
+  "not included in this build": "не включено до цієї збірки",
+  "Tailcat": "Tailcat",
+  "This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.": "Ця адреса є секретним засобом доступу. Вона зберігається в зашифрованому профілі та синхронізується разом із ним; використовуйте її лише в довірених профілях.",
+  "Transport": "Транспорт",
+  "Tailcat address": "Адреса Tailcat"
 }

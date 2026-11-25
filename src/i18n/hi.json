@@ -2196,5 +2196,13 @@
   "Your profiles sync automatically once open — manage sync and sharing for a profile from its {profile} panel inside the app.": "आपकी प्रोफ़ाइलें खुलते ही अपने-आप सिंक होती हैं — किसी प्रोफ़ाइल का सिंक और शेयरिंग ऐप के अंदर उसके {profile} पैनल से मैनेज करें।",
   "Your saved passwords and SSH keys.": "आपके सेव किए गए पासवर्ड और SSH कुंजियाँ।",
   "Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.": "आपकी सेव की गई प्रोफ़ाइलें और सर्वर सुरक्षित हैं, लेकिन इससे आपके खुले सेशन बंद हो गए: उनके टर्मिनल में जो चल रहा था वह ख़त्म हो गया और उनका स्क्रॉलबैक चला गया। फिर से लोड करने पर लगभग हमेशा यह त्रुटि ठीक हो जाती है और आप प्रोफ़ाइल चुनने वाली स्क्रीन पर लौट आते हैं। अगर यह बार-बार हो, तो बग रिपोर्ट करते समय नीचे दिया गया विवरण कॉपी करें।",
-  "ZRLE (any colour depth)": "ZRLE (कोई भी कलर डेप्थ)"
+  "ZRLE (any colour depth)": "ZRLE (कोई भी कलर डेप्थ)",
+  "Direct": "सीधा",
+  "Enter a Tailcat address beginning with tc": "tc से शुरू होने वाला Tailcat पता दर्ज करें",
+  "Name and a valid Tailcat address are required.": "नाम और मान्य Tailcat पता आवश्यक हैं।",
+  "not included in this build": "इस बिल्ड में शामिल नहीं",
+  "Tailcat": "Tailcat",
+  "This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.": "यह पता एक गुप्त एक्सेस क्षमता है। इसे एन्क्रिप्टेड प्रोफ़ाइल में रखा जाता है और उसी के साथ सिंक किया जाता है; इसे केवल विश्वसनीय प्रोफ़ाइल में उपयोग करें।",
+  "Transport": "ट्रांसपोर्ट",
+  "Tailcat address": "Tailcat पता"
 }

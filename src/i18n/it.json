@@ -2196,5 +2196,13 @@
   "Your profiles sync automatically once open — manage sync and sharing for a profile from its {profile} panel inside the app.": "I tuoi profili si sincronizzano automaticamente una volta aperti: gestisci la sincronizzazione e la condivisione di un profilo dal suo pannello {profile} nell’app.",
   "Your saved passwords and SSH keys.": "Le tue password e chiavi SSH salvate.",
   "Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.": "I tuoi profili e server salvati sono intatti, ma questo errore ha chiuso le sessioni aperte: ciò che girava nei loro terminali è terminato e la loro cronologia di scorrimento è andata persa. Ricaricare risolve quasi sempre l’errore e ti riporta alla scelta del profilo. Se continua a succedere, copia i dettagli qui sotto quando segnali il bug.",
-  "ZRLE (any colour depth)": "ZRLE (qualsiasi profondità di colore)"
+  "ZRLE (any colour depth)": "ZRLE (qualsiasi profondità di colore)",
+  "Direct": "Diretto",
+  "Enter a Tailcat address beginning with tc": "Inserisci un indirizzo Tailcat che inizi con tc",
+  "Name and a valid Tailcat address are required.": "Sono necessari un nome e un indirizzo Tailcat valido.",
+  "not included in this build": "non incluso in questa build",
+  "Tailcat": "Tailcat",
+  "This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.": "Questo indirizzo è un segreto di accesso. È salvato nel profilo cifrato e sincronizzato con esso; usalo solo in profili attendibili.",
+  "Transport": "Trasporto",
+  "Tailcat address": "Indirizzo Tailcat"
 }

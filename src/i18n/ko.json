@@ -2196,5 +2196,13 @@
   "Your profiles sync automatically once open — manage sync and sharing for a profile from its {profile} panel inside the app.": "프로필은 열면 자동으로 동기화됩니다. 각 프로필의 동기화와 공유는 앱 안의 {profile} 패널에서 관리하세요.",
   "Your saved passwords and SSH keys.": "저장된 비밀번호와 SSH 키입니다.",
   "Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.": "저장된 프로필과 서버는 그대로지만, 열려 있던 세션은 닫혔습니다. 터미널에서 실행 중이던 작업은 끝났고 스크롤백도 사라졌습니다. 다시 불러오면 거의 항상 오류가 해결되고 프로필 선택 화면으로 돌아갑니다. 계속 발생하면 버그를 보고할 때 아래 세부 정보를 복사해 주세요.",
-  "ZRLE (any colour depth)": "ZRLE (모든 색 깊이)"
+  "ZRLE (any colour depth)": "ZRLE (모든 색 깊이)",
+  "Direct": "직접",
+  "Enter a Tailcat address beginning with tc": "tc로 시작하는 Tailcat 주소를 입력하세요",
+  "Name and a valid Tailcat address are required.": "이름과 유효한 Tailcat 주소가 필요합니다.",
+  "not included in this build": "이 빌드에 포함되지 않음",
+  "Tailcat": "Tailcat",
+  "This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.": "이 주소는 비밀 접근 권한입니다. 암호화된 프로필에 저장되어 해당 프로필과 동기화됩니다. 신뢰할 수 있는 프로필에서만 사용하세요.",
+  "Transport": "전송 방식",
+  "Tailcat address": "Tailcat 주소"
 }

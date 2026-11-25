@@ -1274,6 +1274,7 @@ fn emptied_cols(table: &str, here: &[Option<String>], obj: &serde_json::Map<Stri
             had.as_deref().is_some_and(is_filled)
                 && !new_key(col)
                 && match obj.get(**col) {
+                    None if **col == "tailcat_address" => false,
                     None | Some(Value::Null) => true,
                     Some(Value::String(s)) => !is_filled(s),
                     Some(_) => false,
@@ -1523,6 +1524,10 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // the node back into an SSH server here, so the local value is kept. A
     // newer peer always sends the key, NULL for an SSH server.
     let preserve_local_protocol = spec.table == "servers" && !obj.contains_key("protocol");
+    // Older Submarine versions omit the Tailcat fields. Keep the local transport
+    // and its secret when such a peer edits an otherwise known server.
+    let mut preserve_local_transport = spec.table == "servers" && !obj.contains_key("transport");
+    let preserve_local_tailcat_address = spec.table == "servers" && !obj.contains_key("tailcat_address");
     // And for a server's `run_on_connect_every` (#256): a peer from before it
     // would otherwise turn it off whenever it edits the server.
     let preserve_local_every = spec.table == "servers" && !obj.contains_key("run_on_connect_every");
@@ -1554,6 +1559,11 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
         if *c == "position" && matches!(val, None | Some(serde_json::Value::Null)) {
             params.push(Box::new(0i64));
             preserve_local_position = true;
+        } else if *c == "transport" && matches!(val, None | Some(serde_json::Value::Null)) {
+            // Older peers don't know this column; use a safe INSERT default
+            // while preserving a newer local Tailcat setting on UPDATE.
+            params.push(Box::new("direct".to_string()));
+            preserve_local_transport = true;
         } else {
             params.push(json_to_sql(val));
         }
@@ -1622,6 +1632,10 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 format!("position={}.position", spec.table)
             } else if c.as_str() == "protocol" && preserve_local_protocol {
                 format!("protocol={}.protocol", spec.table)
+            } else if c.as_str() == "transport" && preserve_local_transport {
+                format!("transport={}.transport", spec.table)
+            } else if c.as_str() == "tailcat_address" && preserve_local_tailcat_address {
+                format!("tailcat_address={}.tailcat_address", spec.table)
             } else if c.as_str() == "run_on_connect_every" && preserve_local_every {
                 format!("run_on_connect_every={}.run_on_connect_every", spec.table)
             } else if c.as_str() == "auto_open" && preserve_local_auto_open {
@@ -4291,7 +4305,7 @@ mod sync_engine_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, transport TEXT NOT NULL DEFAULT 'direct', tailcat_address TEXT, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, auto_open INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, transport TEXT, tailcat_address TEXT, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, auto_open INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER, tags TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
@@ -6081,6 +6095,35 @@ mod sync_engine_tests {
         assert_eq!((proxy, auto), (1080, 1));
     }
 
+    // A pre-Tailcat peer can update other profile fields without erasing the
+    // local Tailcat transport or its encrypted address.
+    #[test]
+    fn old_peer_update_preserves_local_tailcat_settings() {
+        let (a, _ha) = device("A");
+        a.execute(
+            "INSERT INTO servers(name,host,port,transport,tailcat_address) VALUES('nas','tailcat.invalid',22,'tailcat','tcSecretCase')",
+            [],
+        ).unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &seed, &hb).unwrap();
+        let server = live(&seed, "servers");
+        let from_old_peer = reworked(server, |obj| {
+            obj.remove("transport");
+            obj.remove("tailcat_address");
+            obj.insert("notes".into(), "changed by old peer".into());
+        });
+        apply_remote_records(&b, &KEY, &[from_old_peer], &hb).unwrap();
+        let (transport, address, notes): (String, Option<String>, String) = b.query_row(
+            "SELECT transport, tailcat_address, notes FROM servers WHERE name='nas'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(transport, "tailcat");
+        assert_eq!(address.as_deref(), Some("tcSecretCase"));
+        assert_eq!(notes, "changed by old peer");
+    }
+
     // A record's links are set after the whole batch, so they used to be set
     // even when the record itself failed to write: the row it failed to
     // replace still ended up pointing where the record said (a server routed
@@ -7658,8 +7701,9 @@ async fn setup_master_db_inner(
             "ALTER TABLE servers ADD COLUMN protocol TEXT",
             // Tailcat selects the underlying application transport independently
             // of the SSH/FTP/RDP protocol. Its address is a secret capability.
-            "ALTER TABLE servers ADD COLUMN transport TEXT NOT NULL DEFAULT 'direct'",
+            "ALTER TABLE servers ADD COLUMN transport TEXT",
             "ALTER TABLE servers ADD COLUMN tailcat_address TEXT",
+            "UPDATE servers SET host='tailcat.invalid' WHERE transport='tailcat' AND host='tailcat'",
             // Per-algorithm host-key tracking. Legacy rows keep key_type NULL
             // (treated conservatively as "same type" so a real key rotation is
             // never downgraded to a benign first-time prompt); rows recorded
@@ -7766,7 +7810,7 @@ async fn setup_master_db_inner(
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, transport TEXT NOT NULL DEFAULT 'direct', tailcat_address TEXT, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, auto_open INTEGER, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, transport TEXT, tailcat_address TEXT, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, auto_open INTEGER, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER, tags TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
@@ -8507,7 +8551,7 @@ async fn add_server(
 ) -> Result<i64, String> {
     check_server_port(port)?;
     let (transport, tailcat_address) = normalize_transport(transport, tailcat_address)?;
-    let host = if transport == "tailcat" { "tailcat".to_string() } else { host };
+    let host = if transport == "tailcat" { TAILCAT_HOST.to_string() } else { host };
     let (proxy_type, proxy_host, proxy_port) = if transport == "tailcat" {
         ("none".to_string(), String::new(), 1080)
     } else {
@@ -8589,7 +8633,7 @@ async fn save_quick_connect_node(
     if transport == "tailcat" && protocol.is_some() {
         return Err("Tailcat transport is only supported for SSH servers".into());
     }
-    let stored_host = if transport == "tailcat" { "tailcat" } else { auth.host.as_str() };
+    let stored_host = if transport == "tailcat" { TAILCAT_HOST } else { auth.host.as_str() };
     if protocol.is_some() && auth.private_key.as_ref().is_some_and(|k| !k.trim().is_empty()) {
         return Err("An FTP server logs in with a password, not an SSH key".into());
     }
@@ -8692,7 +8736,7 @@ async fn edit_server(
             return Err("Tailcat transport is only supported for SSH servers".into());
         }
     }
-    let host = if transport == "tailcat" { "tailcat".to_string() } else { host };
+    let host = if transport == "tailcat" { TAILCAT_HOST.to_string() } else { host };
     let (proxy_type, proxy_host, proxy_port) = if transport == "tailcat" {
         ("none".to_string(), String::new(), 1080)
     } else {
@@ -8996,14 +9040,15 @@ async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, va
 async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: Option<i32>, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    if value.is_some() {
-        let transport: String = conn.query_row(
-            "SELECT COALESCE(transport, 'direct') FROM servers WHERE id=?1",
-            [id],
-            |row| row.get(0),
+    if let Some(jump_id) = value {
+        let transports: (String, String) = conn.query_row(
+            "SELECT COALESCE(source.transport, 'direct'), COALESCE(jump.transport, 'direct')
+             FROM servers source JOIN servers jump ON jump.id=?1 WHERE source.id=?2",
+            rusqlite::params![jump_id, id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         ).map_err(|e| format!("[DATABASE] SERVER_JUMP_HOST_FAILED: {e}"))?;
-        if transport == "tailcat" {
-            return Err("Tailcat transport cannot use a ProxyJump host".into());
+        if transports.0 == "tailcat" || transports.1 == "tailcat" {
+            return Err("Tailcat transport cannot be used with ProxyJump".into());
         }
     }
     conn.execute(
@@ -9014,6 +9059,8 @@ async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: 
     save_unless_batched(&state, persist)?;
     Ok(())
 }
+
+const TAILCAT_HOST: &str = "tailcat.invalid";
 
 fn normalize_transport(
     transport: Option<String>,
@@ -9027,10 +9074,7 @@ fn normalize_transport(
             if !address.starts_with("tc") {
                 return Err("Tailcat address must start with tc".into());
             }
-            #[cfg(feature = "tailcat-capi")]
-            return Ok((transport, Some(address)));
-            #[cfg(not(feature = "tailcat-capi"))]
-            Err("This Submarine build was not compiled with Tailcat support".into())
+            Ok((transport, Some(address)))
         }
         _ => Err("Unsupported connection transport".into()),
     }
@@ -9057,7 +9101,7 @@ mod tailcat_transport_tests {
     fn quick_auth_debug_redacts_capability_and_credentials() {
         let token = "tcCaseSensitive-secret";
         let auth = QuickAuth {
-            host: "tailcat".into(),
+            host: TAILCAT_HOST.into(),
             port: 22,
             username: "user".into(),
             password: Some("password-secret".into()),
@@ -9072,7 +9116,6 @@ mod tailcat_transport_tests {
         assert!(!debug.contains("password-secret"));
     }
 
-    #[cfg(feature = "tailcat-capi")]
     #[test]
     fn tailcat_transport_preserves_address_case() {
         let address = "tcAbC_secret";
@@ -13966,7 +14009,7 @@ fn resolve_jump_auth(
                    s.password as s_pass, c.password as c_pass,
                    s.key_id   as s_key,  c.key_id   as c_key,
                    s.auth_type, c.auth_type as cred_auth_type,
-                   s.protocol, s.name
+                   s.protocol, s.name, COALESCE(s.transport, 'direct')
             FROM servers s
             LEFT JOIN credentials c ON s.credential_id = c.id
             WHERE s.id=?1
@@ -13978,6 +14021,9 @@ fn resolve_jump_auth(
         Some(r) => r,
         None => return Ok(None),
     };
+    if row.get::<_, String>(12).unwrap_or_else(|_| "direct".into()) == "tailcat" {
+        return Err("Tailcat transport cannot be used as a ProxyJump host".into());
+    }
     let host: String = row.get::<_, String>(0).map_err(|e| format!("[DB] jump host: {}", e))?;
     let port: i32 = row.get::<_, i32>(1).map_err(|e| format!("[DB] jump port: {}", e))?;
     let s_user: Option<String> = row.get::<_, Option<String>>(2).unwrap_or_default();
@@ -15061,6 +15107,12 @@ async fn initiate_connection(
         let port = u16::try_from(port).map_err(|_| format!("Port {port} isn't a valid port"))?;
         ConfigTarget::resolve(&host, port, &user, name).await
     };
+    if transport == "tailcat" {
+        // SSH config may supply authentication and host-key options, but the
+        // Tailcat address and saved SSH port define the actual endpoint.
+        config_target.host = host.clone();
+        config_target.port = u16::try_from(port).map_err(|_| format!("Port {port} isn't a valid port"))?;
+    }
     // Its ProxyCommand / ProxyJump, unless the server has its own route.
     let own_route = if jump_host_id.is_some() {
         Some("jump host")
