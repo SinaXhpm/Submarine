@@ -13,7 +13,8 @@ export const USUAL_PORT: Record<string, number> = { ssh: 22, telnet: 23, rdp: 33
 export const protocolOf = (s: any): string => (s?.protocol && PROTOCOL_ICON[s.protocol] ? s.protocol : "ssh");
 
 // A server's or folder's own colour as its avatar's fill, edge and glyph, the
-// glyph a little lighter so it reads on the dark card; the accent without one.
+// glyph a little lighter so it reads on the dark card (darker on the light
+// look: --lift-to in App.css); the accent without one.
 export const hexRgb = (c?: string | null): [number, number, number] | null => {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec((c || "").trim());
   if (!m) return null;
@@ -22,9 +23,9 @@ export const hexRgb = (c?: string | null): [number, number, number] | null => {
 };
 export const avatarStyle = (color?: string | null): CSSProperties => {
   const rgb = hexRgb(color);
-  if (!rgb) return { background: "rgb(var(--primary) / 0.16)", borderColor: "rgb(var(--primary) / 0.4)", color: "rgb(var(--primary))" };
+  if (!rgb) return { background: "rgb(var(--primary) / 0.16)", borderColor: "rgb(var(--primary) / 0.4)", color: "rgb(var(--primary-text))" };
   const [r, g, b] = rgb;
-  const lift = (v: number) => Math.round(v + (255 - v) * 0.35);
+  const lift = (v: number) => `calc(${v} + (var(--lift-to) - ${v}) * 0.35)`;
   return { background: `rgba(${r}, ${g}, ${b}, 0.16)`, borderColor: `rgba(${r}, ${g}, ${b}, 0.4)`, color: `rgb(${lift(r)}, ${lift(g)}, ${lift(b)})` };
 };
 // The server's own colour as a solid line (the open tab's top edge); the accent without one.

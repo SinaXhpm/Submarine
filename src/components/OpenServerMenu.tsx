@@ -88,7 +88,7 @@ export function OpenServerMenu({ servers, folders, serverTabs, anchor, onOpen, o
         role="dialog"
         aria-label={t("Open a server")}
         data-open-server-menu=""
-        className="fixed z-[81] w-80 max-w-[calc(100vw-16px)] rounded-xl border border-white/10 bg-[#15151a] shadow-2xl shadow-black/60 p-1.5 no-drag"
+        className="fixed z-[81] w-80 max-w-[calc(100vw-16px)] rounded-xl border border-white/10 bg-shade-15151a shadow-2xl shadow-black/60 p-1.5 no-drag"
         // Until it is placed it is see-through, not hidden: a hidden box
         // can't take the focus its search asks for.
         style={pos ?? { opacity: 0 }}
@@ -131,7 +131,7 @@ export function OpenServerMenu({ servers, folders, serverTabs, anchor, onOpen, o
               >
                 <span className="relative w-6 h-6 rounded-md border flex items-center justify-center shrink-0" style={avatarStyle(s.color)}>
                   <Icon size={12} />
-                  {tab && <span aria-hidden className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-[#15151a] ${TAB_DOT[tab] ?? "bg-zinc-500"}`} />}
+                  {tab && <span aria-hidden className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-shade-15151a ${TAB_DOT[tab] ?? "bg-zinc-500"}`} />}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className={`block truncate text-[12.5px] font-semibold ${picked ? "text-primary" : "text-zinc-100"}`}>{s.name}</span>

@@ -2077,7 +2077,7 @@ interface InfoCardProps {
   bodyClassName?: string;
 }
 const InfoCard = ({ title, icon, actions, toolbar, children, className = "", bodyClassName = "" }: InfoCardProps) => (
-  <section className={`bg-[#121215] border border-white/5 rounded-xl overflow-hidden ${className}`}>
+  <section className={`bg-shade-121215 border border-white/5 rounded-xl overflow-hidden ${className}`}>
     <div className="border-b border-white/5 bg-white/[0.02]">
       {/* Title row never wraps: the title truncates, small actions stay pinned. */}
       <div className="px-3 py-2 flex items-center gap-2 min-w-0">

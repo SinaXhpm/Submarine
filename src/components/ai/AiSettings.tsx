@@ -78,7 +78,7 @@ const Switch = ({ on, onChange, label: aria }: { on: boolean; onChange: (v: bool
     onClick={() => onChange(!on)}
     className={`relative shrink-0 w-11 h-6 rounded-full transition-colors before:absolute before:-inset-y-2 before:inset-x-0 before:content-[''] ${on ? "bg-primary" : "bg-zinc-700"}`}
   >
-    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${on ? "left-[22px]" : "left-0.5"}`} />
+    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-knob transition-all ${on ? "left-[22px]" : "left-0.5"}`} />
   </button>
 );
 
@@ -141,7 +141,7 @@ export const AiSettings = ({ servers: given, onOpenChats, embedded = false, onCh
   };
 
   const card = (
-      <div className={embedded ? "space-y-4" : "bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl"}>
+      <div className={embedded ? "space-y-4" : "bg-shade-121215 border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl"}>
         <p className="text-[12px] text-zinc-400 leading-relaxed">
           Connect the AI providers the assistant uses, with your own API keys or a model on your network. Requests go from this device straight to the provider; keys stay on this device, encrypted, and are never synced or exported.
         </p>

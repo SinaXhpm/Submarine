@@ -152,7 +152,7 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
         aria-labelledby="cmd-history-title"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
-        className="w-full max-w-[720px] bg-[#121214] border border-white/10 rounded-xl shadow-2xl font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150 overflow-hidden flex flex-col max-h-[70vh]"
+        className="w-full max-w-[720px] bg-shade-121214 border border-white/10 rounded-xl shadow-2xl font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150 overflow-hidden flex flex-col max-h-[70vh]"
       >
         <div className="flex items-center gap-2 px-3 py-2 border-b border-white/10">
           <History size={14} className="text-primary" />

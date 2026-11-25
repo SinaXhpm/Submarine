@@ -9,8 +9,8 @@
    the only renderer we ship to. */
 select option,
 select optgroup {
-  background-color: #1a1a1e;
-  color: #e4e4e7;
+  background-color: rgb(var(--c-shade-1a1a1e));
+  color: rgb(var(--c-zinc-200));
 }
 
 /* Letter-spacing (Tailwind's tracking-*) breaks the line that joins Devanagari
@@ -29,6 +29,11 @@ select optgroup {
     --foreground: 0 0% 100%;
     --primary: 96 165 250;
     --primary-hex: #60a5fa;
+    /* The accent as text: darker on a light background (util/appTheme). */
+    --primary-text: 96 165 250;
+    /* Where a server's own colour goes so its avatar's glyph reads
+       (util/serverLook): toward white, toward black on the light look. */
+    --lift-to: 255;
     --base-font-size: 15.5px;
     --border: 240 5.9% 15%;
     /* The interface font, and the one for text set in columns (paths,
@@ -37,6 +42,10 @@ select optgroup {
        terminal's default stack. */
     --ui-font: 'Inter', system-ui, -apple-system, sans-serif;
     --ui-mono: Consolas, ui-monospace, Menlo, Monaco, "Cascadia Mono", "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", "Noto Sans Mono", "Droid Sans Mono", "Courier New", monospace;
+  }
+
+  :root.light {
+    --lift-to: 0;
   }
 
   body {
@@ -56,8 +65,8 @@ select optgroup {
   input:-webkit-autofill,
   input:-webkit-autofill:hover,
   input:-webkit-autofill:focus {
-    -webkit-text-fill-color: var(--primary-hex);
-    -webkit-box-shadow: 0 0 0px 1000px #09090b inset;
+    -webkit-text-fill-color: rgb(var(--primary-text));
+    -webkit-box-shadow: 0 0 0px 1000px rgb(var(--c-shade-09090b)) inset;
     transition: background-color 5000s ease-in-out 0s;
   }
 }

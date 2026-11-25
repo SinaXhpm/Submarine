@@ -1466,7 +1466,7 @@ const StatusBadge = ({ tone, children }: { tone: "green" | "amber" | "red" | "zi
 };
 
 const Card = ({ title, actions, children }: { title: string; actions?: React.ReactNode; children: React.ReactNode }) => (
-  <section className="bg-[#121215] border border-white/5 rounded-xl overflow-hidden">
+  <section className="bg-shade-121215 border border-white/5 rounded-xl overflow-hidden">
     <div className="px-3 py-1.5 border-b border-white/5 bg-white/[0.02] flex items-center gap-2">
       <span className="text-[11px] font-semibold text-zinc-400 select-text">{title}</span>
       {actions && <div className="ml-auto">{actions}</div>}
@@ -1524,7 +1524,7 @@ const ModalShell = ({ title, onClose, actions, children }: { title: string; onCl
     // card with the soft-edge look. Saves the ~24 px of viewport that a
     // floating card eats on a 360 px screen.
     <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex sm:items-center sm:justify-center sm:p-3 animate-in fade-in" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="bg-[#0c0c0e] sm:border sm:border-white/10 sm:rounded-xl w-full sm:max-w-3xl h-full sm:h-[80vh] flex flex-col overflow-hidden shadow-2xl">
+      <div onClick={(e) => e.stopPropagation()} className="bg-shade-0c0c0e sm:border sm:border-white/10 sm:rounded-xl w-full sm:max-w-3xl h-full sm:h-[80vh] flex flex-col overflow-hidden shadow-2xl">
         <div className="shrink-0 h-11 sm:h-10 px-3 flex items-center justify-between border-b border-white/5 bg-white/[0.02]">
           <span className="text-[12px] font-semibold text-zinc-300 truncate select-text">{title}</span>
           <div className="flex items-center gap-2 shrink-0">

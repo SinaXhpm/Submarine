@@ -105,7 +105,7 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
         pointerEvents: "none",
         zIndex: 10000,
       }}
-      className="bg-[#0c0c0e]/95 border border-indigo-500/40 rounded-lg px-3 py-1.5 text-[11px] font-mono text-zinc-100 shadow-2xl backdrop-blur-md flex items-center gap-2"
+      className="bg-shade-0c0c0e/95 border border-indigo-500/40 rounded-lg px-3 py-1.5 text-[11px] font-mono text-zinc-100 shadow-2xl backdrop-blur-md flex items-center gap-2"
     >
       {drag.entries.length === 1 && drag.entries[0].isDir
         ? <Folder size={12} className="text-indigo-300 shrink-0" />
@@ -575,7 +575,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   }, []);
 
   return (
-    <div ref={rootRef} className="flex-1 flex flex-col h-full overflow-hidden bg-[#0a0a0c] relative">
+    <div ref={rootRef} className="flex-1 flex flex-col h-full overflow-hidden bg-shade-0a0a0c relative">
       {/* Files view — dual-pane browser. Stays mounted when Mirror is on top
           so directory state and selection don't reset across tab toggles.
           Both FilePanels are ALWAYS mounted (one is just CSS-hidden in

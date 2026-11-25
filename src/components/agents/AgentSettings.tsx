@@ -48,7 +48,7 @@ export const AgentSettings = ({ onOpenPanel }: { onOpenPanel?: () => void }) => 
         <Bot size={14} /> AI agents
       </div>
 
-      <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl space-y-4">
+      <div className="bg-shade-121215 border border-white/5 rounded-2xl p-6 shadow-xl space-y-4">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-zinc-100">Let AI agents on this computer ask for access to my servers</div>
@@ -65,7 +65,7 @@ export const AgentSettings = ({ onOpenPanel }: { onOpenPanel?: () => void }) => 
             onClick={() => void change({ enabled: !ov.enabled })}
             className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${ov.enabled ? "bg-primary" : "bg-zinc-700"} disabled:opacity-60`}
           >
-            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${ov.enabled ? "left-[22px]" : "left-0.5"}`} />
+            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-knob transition-all ${ov.enabled ? "left-[22px]" : "left-0.5"}`} />
           </button>
         </div>
 

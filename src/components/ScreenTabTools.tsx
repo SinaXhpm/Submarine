@@ -74,7 +74,7 @@ export function ToolPanel({ title, onClose, children }: { title: string; onClose
         aria-label={title}
         tabIndex={-1}
         onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
-        className="absolute top-2 right-2 w-[min(380px,calc(100%-16px))] max-h-[calc(100%-16px)] overflow-y-auto overscroll-contain custom-scrollbar rounded-xl border border-white/10 bg-[#141417] shadow-2xl p-3 space-y-3 outline-none"
+        className="absolute top-2 right-2 w-[min(380px,calc(100%-16px))] max-h-[calc(100%-16px)] overflow-y-auto overscroll-contain custom-scrollbar rounded-xl border border-white/10 bg-shade-141417 shadow-2xl p-3 space-y-3 outline-none"
       >
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-[12px] font-bold text-zinc-200">{title}</h3>
@@ -131,7 +131,7 @@ export function LinkPanel({ link, onLessData }: { link: LinkStats | null; onLess
           </p>
         </div>
       </div>
-      <div className="space-y-1.5 p-2.5 rounded-lg bg-[#1a1a1e] border border-white/5">
+      <div className="space-y-1.5 p-2.5 rounded-lg bg-shade-1a1a1e border border-white/5">
         <Figure label={t("Delay (there and back)")} value={delay} />
         <Figure label={t("Receiving")} value={link ? formatRate(link.inRate) : "–"} />
         <Figure label={t("Sending")} value={link ? formatRate(link.outRate) : "–"} />
@@ -169,7 +169,7 @@ export function FilesPanel({ shared, o, set, drives, reconnect, onOpenOnServer }
   return (
     <>
       {shared !== undefined && (
-        <div className="p-2.5 rounded-lg bg-[#1a1a1e] border border-white/5 text-[11.5px] leading-snug">
+        <div className="p-2.5 rounded-lg bg-shade-1a1a1e border border-white/5 text-[11.5px] leading-snug">
           <div className="text-zinc-500">{t("Shared now")}</div>
           {shared ? (
             <div className="text-zinc-200 break-all">

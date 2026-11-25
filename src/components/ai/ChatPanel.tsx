@@ -114,7 +114,7 @@ export const Toggle = ({ on, label, onChange, disabled }: { on: boolean; label: 
   <button type="button" role="switch" aria-checked={on} disabled={disabled} onClick={() => onChange(!on)}
     className="min-h-10 sm:min-h-0 flex items-center gap-2 text-[12px] text-zinc-300 disabled:opacity-40">
     <span className={`w-7 h-4 rounded-full transition-colors relative ${on ? "bg-primary/70" : "bg-white/15"}`}>
-      <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${on ? "left-3.5" : "left-0.5"}`} />
+      <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-knob transition-all ${on ? "left-3.5" : "left-0.5"}`} />
     </span>
     {label}
   </button>
@@ -691,7 +691,7 @@ export const ChatPanel = ({
               <MoreHorizontal size={16} />
             </button>
             {menu && (
-              <div ref={menuBox} style={{ right: -menuShift }} className="absolute top-11 sm:top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#16161a] shadow-2xl p-1 text-[12px]">
+              <div ref={menuBox} style={{ right: -menuShift }} className="absolute top-11 sm:top-9 z-40 w-56 rounded-xl border border-white/10 bg-shade-16161a shadow-2xl p-1 text-[12px]">
                 <button type="button" className="w-full text-left px-3 py-3 sm:py-2 rounded-lg hover:bg-white/5 text-zinc-200 flex items-center gap-2" onClick={() => void rename()}>
                   <Pencil size={12} /> Rename
                 </button>
@@ -711,7 +711,7 @@ export const ChatPanel = ({
         </div>
 
         {drawer && (
-          <div ref={drawerRef} className="absolute left-0 right-0 top-full max-h-[calc(100vh-17rem)] sm:max-h-[70vh] overflow-y-auto border-b border-white/10 bg-[#141417] shadow-2xl shadow-black/60">
+          <div ref={drawerRef} className="absolute left-0 right-0 top-full max-h-[calc(100vh-17rem)] sm:max-h-[70vh] overflow-y-auto border-b border-white/10 bg-shade-141417 shadow-2xl shadow-black/60">
             <div className="p-3 space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-2">
                 <Field label="Provider">
@@ -893,7 +893,7 @@ export const ChatPanel = ({
               <Paperclip size={16} />
             </button>
             {attachMenu && (
-              <div className="absolute left-0 bottom-12 z-20 w-60 rounded-xl border border-white/10 bg-[#16161a] shadow-2xl p-1 text-[12px]">
+              <div className="absolute left-0 bottom-12 z-20 w-60 rounded-xl border border-white/10 bg-shade-16161a shadow-2xl p-1 text-[12px]">
                 <button type="button" className="w-full text-left px-3 py-3 sm:py-2 rounded-lg hover:bg-white/5 text-zinc-200" onClick={() => void addAttachment("selection")}>Terminal selection</button>
                 <button type="button" className="w-full text-left px-3 py-3 sm:py-2 rounded-lg hover:bg-white/5 text-zinc-200" onClick={() => void addAttachment("tail")}>Last 200 lines of the terminal</button>
               </div>

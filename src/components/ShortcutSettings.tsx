@@ -149,7 +149,7 @@ export function ShortcutSettings() {
       <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
         <Keyboard size={14} /> {t("Keyboard shortcuts")}
       </div>
-      <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl space-y-3" data-shortcut-table="">
+      <div className="bg-shade-121215 border border-white/5 rounded-2xl p-6 shadow-xl space-y-3" data-shortcut-table="">
         <p className="text-[12px] text-zinc-400 leading-relaxed">
           {t("Click + beside an action, then press the keys you want for it. An action can have several keys; × removes one.")}
         </p>

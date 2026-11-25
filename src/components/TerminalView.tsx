@@ -2683,7 +2683,7 @@ const TerminalView = ({
     // pane (between xterm and the system soft keyboard). On desktop the bar
     // isn't rendered at all, so the xterm child claims the full height as
     // before.
-    <div className="h-full w-full p-2 pr-2 pb-0 relative flex flex-col" style={{ background: termBg }}>
+    <div className="theme-dark h-full w-full p-2 pr-2 pb-0 relative flex flex-col" style={{ background: termBg }}>
       <div
         ref={terminalRef}
         className="flex-1 min-h-0 w-full overflow-hidden select-text"
@@ -2900,13 +2900,13 @@ const TerminalView = ({
       {disabled && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
           {reconnecting ? (
-            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[11.5px] font-mono border bg-[#2c1f0b] border-amber-500/30 text-amber-200 shadow-lg flex items-center gap-1.5">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[11.5px] font-mono border bg-shade-2c1f0b border-amber-500/30 text-amber-200 shadow-lg flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-300 animate-pulse-brief" aria-hidden="true" />
               <span className="sm:hidden">{t('Reconnecting…')}</span>
               <span className="hidden sm:inline">{t('Reconnecting… buffer is read-only')}</span>
             </span>
           ) : (
-            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[11.5px] font-mono border bg-[#2c1117] border-rose-500/30 text-rose-300 shadow-lg">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[11.5px] font-mono border bg-shade-2c1117 border-rose-500/30 text-rose-300 shadow-lg">
               <span className="sm:hidden">{t('Read-only')}</span>
               <span className="hidden sm:inline">{t('Disconnected — buffer is read-only')}</span>
             </span>

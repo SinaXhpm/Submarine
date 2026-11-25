@@ -117,7 +117,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3" onClick={close}>
-      <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-shade-121214 border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between">
           <span className="text-[12px] font-semibold text-white flex items-center gap-2">
@@ -143,8 +143,8 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                 onChange={(e) => setProtocol(e.target.value === "ftps" ? "ftps" : "ssh")}
                 className="w-full h-9 px-2 bg-zinc-900/60 border border-white/10 rounded-lg text-[12px] text-zinc-50 outline-none focus:border-primary/50"
               >
-                <option value="ssh" className="bg-[#1a1a1e]">SSH</option>
-                <option value="ftps" className="bg-[#1a1a1e]">{t("FTP or FTPS (files)")}</option>
+                <option value="ssh" className="bg-shade-1a1a1e">SSH</option>
+                <option value="ftps" className="bg-shade-1a1a1e">{t("FTP or FTPS (files)")}</option>
               </select>
             </div>
             {ftp && (
@@ -156,9 +156,9 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                   onChange={(e) => setProtocol(e.target.value as FtpProtocol)}
                   className="w-full h-9 px-2 bg-zinc-900/60 border border-white/10 rounded-lg text-[12px] text-zinc-50 outline-none focus:border-primary/50"
                 >
-                  <option value="ftps" className="bg-[#1a1a1e]">{t("FTPS: TLS after connecting (usual)")}</option>
-                  <option value="ftps-implicit" className="bg-[#1a1a1e]">{t("FTPS: TLS from the start (port 990)")}</option>
-                  <option value="ftp" className="bg-[#1a1a1e]">{t("None: plain FTP (not encrypted)")}</option>
+                  <option value="ftps" className="bg-shade-1a1a1e">{t("FTPS: TLS after connecting (usual)")}</option>
+                  <option value="ftps-implicit" className="bg-shade-1a1a1e">{t("FTPS: TLS from the start (port 990)")}</option>
+                  <option value="ftp" className="bg-shade-1a1a1e">{t("None: plain FTP (not encrypted)")}</option>
                 </select>
               </div>
             )}

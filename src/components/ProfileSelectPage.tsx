@@ -1458,7 +1458,7 @@ const RowMenu = ({ label, items, place, onClose }: {
         aria-label={label}
         onKeyDown={onKeyDown}
         style={pos ?? { left: -9999, top: -9999 }}
-        className="fixed z-[9999] min-w-[220px] rounded-xl border border-white/10 bg-[#141418] p-1 shadow-2xl shadow-black/60"
+        className="fixed z-[9999] min-w-[220px] rounded-xl border border-white/10 bg-shade-141418 p-1 shadow-2xl shadow-black/60"
       >
         {items.map((it, i) => (
           <Fragment key={it.label}>

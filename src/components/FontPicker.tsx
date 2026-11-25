@@ -211,7 +211,7 @@ export default function FontPicker({
           id={listId}
           ref={listRef}
           role="listbox"
-          className="max-h-72 overflow-y-auto custom-scrollbar rounded-lg border border-white/10 bg-[#0c0c0f] py-1"
+          className="max-h-72 overflow-y-auto custom-scrollbar rounded-lg border border-white/10 bg-shade-0c0c0f py-1"
         >
           {defaultRow && renderRow(defaultRow, index++)}
 
