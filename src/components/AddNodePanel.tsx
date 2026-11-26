@@ -111,7 +111,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     // The usual port of the new kind, unless another was typed.
     const usual = USUAL_PORTS;
     const port = !newNode.port || Object.values(usual).includes(newNode.port) ? usual[protocol] : newNode.port;
-    const authType = protocol !== "ssh" && newNode.authType === "custom_key" ? "custom_pass" : newNode.authType;
+    const authType = protocol !== "ssh" && (newNode.authType === "custom_key" || newNode.authType === "agent") ? "custom_pass" : newNode.authType;
     setNewNode({ ...newNode, protocol, port, authType });
   };
   const [newFolderName, setNewFolderName] = useState("");
@@ -747,6 +747,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 <option value="vault" className="bg-shade-121215 text-primary">{t("Use a saved login")}</option>
                 <option value="custom_pass" className="bg-shade-121215 text-primary">{t("Type a password")}</option>
                 {isSsh && <option value="custom_key" className="bg-shade-121215 text-primary">{t("Use an SSH key")}</option>}
+                {isSsh && (!IS_MOBILE || newNode.authType === "agent") && <option value="agent" className="bg-shade-121215 text-primary">{t("Use an SSH agent (1Password…)")}</option>}
               </select>
             </div>
 
@@ -815,6 +816,20 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         : t("Leave empty to be asked when connecting.")}
                   </p>
                 </div>
+              </div>
+            )}
+
+            {newNode.authType === 'agent' && isSsh && (
+              <div className="space-y-3 animate-in fade-in">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Username")}</label>
+                  <input type="text" placeholder={t("Ask when connecting")} value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="w-full h-9 bg-shade-1a1a1e rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                </div>
+                <p className="text-[10px] text-zinc-500 ml-1">
+                  {IS_MOBILE
+                    ? t("This device has no SSH agent: the password is asked for when connecting.")
+                    : t("Logs in with a key from an SSH agent on this device: 1Password, Bitwarden, Pageant or ssh-agent. Nothing is saved here, and the agent asks you to approve each use. In 1Password, turn on Settings → Developer → Use the SSH agent.")}
+                </p>
               </div>
             )}
 
