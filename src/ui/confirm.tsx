@@ -322,11 +322,12 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
 
   // Esc cancels, Enter confirms — matches the native dialog conventions so
   // muscle memory keeps working. A key still held down from before (auto
-  // repeat) answers nothing: it was not pressed for this prompt. In a prompt
-  // whose default is Cancel (`safeDefault`), Enter does what the focused
-  // button does, so an Enter alone never says yes. The reveal toggle is
-  // not a dialog answer: Enter on it only flips the reveal, it never
-  // confirms or cancels the prompt.
+  // repeat) answers nothing: it was not pressed for this prompt. Enter does
+  // what the focused button does: on Cancel or X it says no. With the focus
+  // elsewhere it says yes, except in a prompt whose default is Cancel
+  // (`safeDefault`), so there an Enter alone never says yes. The reveal
+  // toggle is not a dialog answer: Enter on it only flips the reveal, it
+  // never confirms or cancels the prompt.
   useEffect(() => {
     if (!state) return;
     const onKey = (e: KeyboardEvent) => {
@@ -334,11 +335,13 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
       if (e.key === "Enter")  {
         e.preventDefault();
         if (!e.repeat) {
-          if (document.activeElement === confirmRevealRef.current) {
+          const focused = document.activeElement;
+          if (focused === confirmRevealRef.current) {
             setConfirmRevealed((r) => !r);
             return;
           }
-          close(state.opts.safeDefault ? document.activeElement === confirmOkRef.current : true);
+          const onButton = focused instanceof HTMLButtonElement && !!confirmPanelRef.current?.contains(focused);
+          close(onButton ? focused === confirmOkRef.current : !state.opts.safeDefault);
         }
       }
     };
@@ -348,12 +351,20 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   }, [state]);
 
   // Same Esc/Enter wiring for the overwrite modal. Esc cancels the whole
-  // batch; Enter picks "Overwrite" (the most common "yes I meant it" path).
+  // batch; Enter does what the focused button does, and Overwrite has the
+  // focus at first (the most common "yes I meant it" path).
   useEffect(() => {
     if (!owState) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) closeOverwrite("cancel"); }
-      if (e.key === "Enter")  { e.preventDefault(); if (!e.repeat) closeOverwrite("overwrite"); }
+      if (e.key === "Enter")  {
+        e.preventDefault();
+        if (e.repeat) return;
+        const focused = document.activeElement;
+        const choice = focused instanceof HTMLElement && owPanelRef.current?.contains(focused) ? focused.dataset.choice : undefined;
+        const known: OverwriteChoice[] = ["overwrite", "skip", "overwrite-all", "skip-all", "cancel"];
+        closeOverwrite(known.find((c) => c === choice) ?? "overwrite");
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -422,7 +433,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                   {owState.opts.direction === "download" ? t("Local file exists") : t("Remote file exists")}
                 </span>
               </div>
-              <button aria-label={t("Close")}onClick={() => closeOverwrite("cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
+              <button aria-label={t("Close")} data-choice="cancel" onClick={() => closeOverwrite("cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -435,21 +446,21 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               {owState.opts.name}
             </p>
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => closeOverwrite("overwrite")} data-default-focus
+              <button data-choice="overwrite" onClick={() => closeOverwrite("overwrite")} data-default-focus
                       className="h-10 sm:h-9 rounded text-[12px] font-semibold bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
                 {t("Overwrite")}
               </button>
-              <button onClick={() => closeOverwrite("skip")}
+              <button data-choice="skip" onClick={() => closeOverwrite("skip")}
                       className="h-10 sm:h-9 rounded text-[12px] font-semibold bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 {t("Skip")}
               </button>
               {owState.opts.batchSize > 1 && (
                 <>
-                  <button onClick={() => closeOverwrite("overwrite-all")}
+                  <button data-choice="overwrite-all" onClick={() => closeOverwrite("overwrite-all")}
                           className="h-10 sm:h-9 rounded text-[12px] font-semibold bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20">
                     {t("Overwrite all")}
                   </button>
-                  <button onClick={() => closeOverwrite("skip-all")}
+                  <button data-choice="skip-all" onClick={() => closeOverwrite("skip-all")}
                           className="h-10 sm:h-9 rounded text-[12px] font-semibold bg-white/[0.03] border border-white/10 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200">
                     {t("Skip all")}
                   </button>
@@ -457,7 +468,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               )}
             </div>
             <div className="mt-3 flex justify-end">
-              <button onClick={() => closeOverwrite("cancel")}
+              <button data-choice="cancel" onClick={() => closeOverwrite("cancel")}
                       className="px-3 h-7 rounded text-[11px] font-semibold bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20">
                 {t("Cancel batch")}
               </button>

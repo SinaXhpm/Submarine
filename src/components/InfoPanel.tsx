@@ -1725,20 +1725,31 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
   // the server over SSH while nobody's watching. Re-shows trigger a fresh fetch.
   const winShown = usePageShown();
 
+  // The timer skips a tick while the last probe still runs (on a slow server
+  // they would pile up), and only the newest answer counts.
+  const inFlight = useRef(false);
+  const fetchSeq = useRef(0);
   const fetchNow = useCallback(async () => {
     if (disabled || !visible) return;
+    const seq = ++fetchSeq.current;
+    inFlight.current = true;
     setLoading(true);
     try {
       const r = await invoke<SectionResult>("ssh_info_probe_section", { sessionId, section: "processes" });
+      if (seq !== fetchSeq.current) return;
       const p = parseProcesses(r.data);
       setRows(p.rows);
       setAvailable(p.available);
       setLastMs(r.exec_ms);
       setErr(null);
     } catch (e: any) {
+      if (seq !== fetchSeq.current) return;
       setErr(typeof e === "string" ? e : (e?.message || t("probe failed")));
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) {
+        inFlight.current = false;
+        setLoading(false);
+      }
     }
   }, [sessionId, disabled, visible]);
 
@@ -1751,7 +1762,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
   // the panel is off screen, or the OS window is minimized/hidden.
   useEffect(() => {
     if (!intervalMs || disabled || !visible || !winShown) return;
-    const id = setInterval(fetchNow, intervalMs);
+    const id = setInterval(() => { if (!inFlight.current) void fetchNow(); }, intervalMs);
     return () => clearInterval(id);
   }, [intervalMs, disabled, visible, winShown, fetchNow]);
 

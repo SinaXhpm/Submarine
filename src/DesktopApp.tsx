@@ -3699,9 +3699,10 @@ function DesktopApp() {
               password: newNode.authType === "custom_pass" ? (newNode.password || null) : null,
               credentialId: (newNode.authType === "vault" && newNode.credentialId) ? parseInt(newNode.credentialId) : null,
               folderId: newNode.folderId ? parseInt(newNode.folderId) : null,
-              proxyType: "none",
-              proxyHost: "",
-              proxyPort: 1080,
+              // An FTP server can go through a proxy, as an SSH one can.
+              proxyType: ftpServer ? (newNode.proxyType || "none") : "none",
+              proxyHost: ftpServer ? (newNode.proxyHost || "") : "",
+              proxyPort: ftpServer ? (newNode.proxyPort || 1080) : 1080,
               tunnels: [],
               authType: newNode.authType === "vault" ? "vault" : "custom_pass",
               keyId: null,

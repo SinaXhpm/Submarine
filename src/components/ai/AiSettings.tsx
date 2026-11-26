@@ -117,18 +117,34 @@ export const AiSettings = ({ servers: given, onOpenChats, embedded = false, onCh
 
   const onChangedRef = useRef(onChanged);
   onChangedRef.current = onChanged;
-  const reload = useCallback(async () => {
+  // A list the caller hasn't been told about yet: the save before Test or
+  // Load models isn't told, since the first-run screen goes on to the chats
+  // when told and would close the editor before the answer shows. It is told
+  // when the editor closes or the card goes.
+  const untold = useRef<ProviderView[] | null>(null);
+  const tellUntold = useCallback(() => {
+    const list = untold.current;
+    untold.current = null;
+    if (list) onChangedRef.current?.(list);
+  }, []);
+  const reload = useCallback(async (tell = true) => {
     try {
       const list = await ai.providers();
       setProviders(list);
       setError(null);
-      onChangedRef.current?.(list);
+      if (tell) {
+        untold.current = null;
+        onChangedRef.current?.(list);
+      } else {
+        untold.current = list;
+      }
     } catch (e) {
       setError(errText(e));
     }
   }, []);
 
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => tellUntold, [tellUntold]);
 
   const remove = async (p: ProviderView) => {
     const ok = await confirm({ title: `Delete ${p.name}?`, message: "Its API key is deleted from this device. Chats that use it stay; pick another provider in them.", okLabel: "Delete", destructive: true, safeDefault: true });
@@ -194,8 +210,8 @@ export const AiSettings = ({ servers: given, onOpenChats, embedded = false, onCh
             input={editing}
             view={providers.find((p) => p.id === editing.id) ?? null}
             servers={servers}
-            onCancel={() => setEditing(null)}
-            onSaved={async (v) => { setEditing((e) => (e ? { ...e, id: v.id } : e)); await reload(); }}
+            onCancel={() => { setEditing(null); tellUntold(); }}
+            onSaved={async (v, done) => { setEditing((e) => (e ? { ...e, id: v.id } : e)); await reload(done); }}
             onDelete={editing.id ? () => { const v = providers.find((p) => p.id === editing.id); if (v) void remove(v); } : undefined}
           />
         ) : (
@@ -225,7 +241,8 @@ interface EditorProps {
   view: ProviderView | null;
   servers: any[];
   onCancel: () => void;
-  onSaved: (v: ProviderView) => void | Promise<void>;
+  /** `done` is false for the save that Test or Load models makes first. */
+  onSaved: (v: ProviderView, done: boolean) => void | Promise<void>;
   onDelete?: () => void;
 }
 
@@ -269,7 +286,7 @@ const ProviderEditor = ({ input, view, servers, onCancel, onSaved, onDelete }: E
     setModels(null);
   };
 
-  const save = async (): Promise<ProviderView | null> => {
+  const save = async (done = true): Promise<ProviderView | null> => {
     setBusy("save");
     setMsg(null);
     try {
@@ -281,7 +298,7 @@ const ProviderEditor = ({ input, view, servers, onCancel, onSaved, onDelete }: E
       setNewKey("");
       setReplacing(false);
       setKeyFor(v.has_key ? keyPlace(v) : null);
-      await onSaved(v);
+      await onSaved(v, done);
       setMsg({ ok: true, text: "Saved." });
       return v;
     } catch (e) {
@@ -293,14 +310,14 @@ const ProviderEditor = ({ input, view, servers, onCancel, onSaved, onDelete }: E
   };
 
   const test = async () => {
-    const v = await save();
+    const v = await save(false);
     if (!v) return;
     setBusy("test");
     try { setMsg({ ok: true, text: await ai.testProvider(v.id) }); } catch (e) { setMsg({ ok: false, text: errText(e) }); } finally { setBusy(null); }
   };
 
   const loadModels = async () => {
-    const v = await save();
+    const v = await save(false);
     if (!v) return;
     setBusy("models");
     try { setModels(await ai.models(v.id)); } catch (e) { setMsg({ ok: false, text: errText(e) }); } finally { setBusy(null); }

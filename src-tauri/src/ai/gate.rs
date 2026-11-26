@@ -1346,6 +1346,97 @@ const SAMPLES: [(&str, bool); 99] = [
     ("x.kdbx", true),
 ];
 
+/// Secret name shapes that a glob can be written for though it matches no
+/// sample: `.env.p*`, `site.p?m` and `id_r*` each aim at one. The second
+/// name stands for the shape among a glob's instances.
+const SECRET_SHAPES: [(&str, &str); 10] = [
+    (".env.*", ".env.local"),
+    ("*.pem", "x.pem"),
+    ("*.key", "x.key"),
+    ("*.p12", "x.p12"),
+    ("*.pfx", "x.pfx"),
+    ("*.kdbx", "x.kdbx"),
+    ("id_rsa*", "id_rsa"),
+    ("id_dsa*", "id_dsa"),
+    ("id_ecdsa*", "id_ecdsa"),
+    ("id_ed25519*", "id_ed25519"),
+];
+
+/// Whether a glob for one name (in lower case) aims at a secret name shape:
+/// some name matches both, with at least two of the glob's own characters
+/// on the shape's fixed text. A glob written for other files (`*.log`,
+/// `syslog.*`, `*`) meets a shape only through wildcards, so it doesn't
+/// count. A name the glob can't match with a leading dot may still be
+/// counted: that adds a card, never removes one.
+fn aims_at(pat: &str, shape: &str) -> bool {
+    if shape.starts_with('.') && !pat.starts_with('.') {
+        return false;
+    }
+    let p: Vec<char> = pat.chars().collect();
+    // The glob's tokens: `*` (None), or one character (Some(start, len)).
+    let mut toks: Vec<Option<(usize, usize)>> = Vec::new();
+    let mut i = 0;
+    while i < p.len() {
+        let len = match p[i] {
+            '*' => {
+                toks.push(None);
+                i += 1;
+                continue;
+            }
+            '[' => class(&p[i..], 'a').map_or(1, |(_, len)| len),
+            _ => 1,
+        };
+        toks.push(Some((i, len)));
+        i += len;
+    }
+    // A token against one fixed character: no match, a match by `?` (no
+    // hit), or a match by the glob's own text (a hit).
+    let meets = |(at, len): (usize, usize), c: char| -> Option<i32> {
+        match p[at] {
+            '?' => Some(0),
+            '[' if len > 1 => class(&p[at..], c).is_some_and(|(hit, _)| hit).then_some(1),
+            x => (x == c).then_some(1),
+        }
+    };
+    let s: Vec<char> = shape.chars().collect();
+    let (n, m) = (toks.len(), s.len());
+    // best[i][j]: the most hits from here to both ends; -1 when there's no way.
+    let mut best = vec![vec![-1i32; m + 1]; n + 1];
+    for i in (0..=n).rev() {
+        for j in (0..=m).rev() {
+            if i == n && j == m {
+                best[i][j] = 0;
+                continue;
+            }
+            let (tok, ch) = (toks.get(i).copied(), s.get(j).copied());
+            let mut b = -1;
+            if tok == Some(None) {
+                // The glob's `*` stands for nothing, or takes the shape's next character.
+                b = b.max(best[i + 1][j]);
+                if ch.is_some() {
+                    b = b.max(best[i][j + 1]);
+                }
+            }
+            if ch == Some('*') {
+                // The shape's `*` stands for nothing, or takes the glob's next character.
+                b = b.max(best[i][j + 1]);
+                if let Some(Some(_)) = tok {
+                    b = b.max(best[i + 1][j]);
+                }
+            }
+            if let (Some(Some(t)), Some(c)) = (tok, ch) {
+                if c != '*' && best[i + 1][j + 1] >= 0 {
+                    if let Some(hit) = meets(t, c) {
+                        b = b.max(best[i + 1][j + 1] + hit);
+                    }
+                }
+            }
+            best[i][j] = b;
+        }
+    }
+    best[0][0] >= 2
+}
+
 /// Shell pattern matching for one path component: `*`, `?`, `[…]`. A
 /// leading `.` must be matched by a literal `.`.
 fn glob_match(pat: &str, name: &str) -> bool {
@@ -1442,8 +1533,15 @@ fn glob_instances(p: &str, home: &Home) -> Option<Vec<String>> {
             // A name longer than 255 bytes can't exist.
             if comp.len() <= 255 {
                 let wild = comp.chars().all(|c| c == '*' || c == '?');
+                // Secret names are matched without letter case.
+                let lower = comp.to_ascii_lowercase();
                 for (n, literal) in SAMPLES {
-                    if !(literal && wild) && glob_match(comp, n) {
+                    if !(literal && wild) && (glob_match(comp, n) || glob_match(&lower, n)) {
+                        v.push(n);
+                    }
+                }
+                for (shape, n) in SECRET_SHAPES {
+                    if aims_at(&lower, shape) {
                         v.push(n);
                     }
                 }
@@ -1496,7 +1594,9 @@ fn names_secret(cand: &str, home: &Home, write: bool) -> bool {
             return secret_by_name(cand);
         }
         let wild = cand.chars().all(|c| c == '*' || c == '?');
-        return SAMPLES.iter().any(|&(n, literal)| !(literal && wild) && glob_match(cand, n) && secret_by_name(n));
+        let lower = cand.to_ascii_lowercase();
+        return SAMPLES.iter().any(|&(n, literal)| !(literal && wild) && (glob_match(cand, n) || glob_match(&lower, n)) && secret_by_name(n))
+            || (cand.len() <= 255 && SECRET_SHAPES.iter().any(|&(shape, _)| aims_at(&lower, shape)));
     }
     let p = home.resolve(cand);
     if has_glob(&p) {
@@ -1851,8 +1951,21 @@ fn ps_ok(args: &[&str], linux: bool) -> bool {
         "format", "sort", "pid", "ppid", "user", "User", "group", "Group", "tty", "sid", "cols", "columns",
         "width", "lines", "rows",
     ];
+    // Switches procps reads the same way in both styles, with no value that
+    // can fail.
+    const PLAIN_SHORT: &str = "AacdefFHjlLmMNPwyZ";
     if args.iter().any(|a| a.contains('E')) {
         return false;
+    }
+    // When its normal reading fails, procps reads every option again BSD
+    // style, where `e` prints the environment: `ps -auxe` asks for the user
+    // "xe", and `ps -e -u x` for one that may not exist. So a single-dash `e`
+    // passes only beside plain switches, and `-o`/`-O` with a format.
+    if linux && args.iter().any(|a| short(a).is_some_and(|s| s.contains('e'))) {
+        let plain = |a: &&str| short(a).is_none_or(|s| s.strip_suffix(['o', 'O']).unwrap_or(s).chars().all(|c| PLAIN_SHORT.contains(c)));
+        if !args.iter().all(plain) {
+            return false;
+        }
     }
     let mut i = 0;
     while let Some(&a) = args.get(i) {
@@ -3864,6 +3977,10 @@ mod tests {
         "ls",
         "ls -la /var/log",
         "ls *.log",
+        "cat /var/log/syslog.*",
+        "cat /var/log/nginx/access*",
+        "tail -n 50 /var/log/app/*.log.1",
+        "cat /srv/app/*.py",
         "ls -la ~",
         "stat /etc/hosts",
         "file /bin/ls",
@@ -4165,6 +4282,15 @@ mod tests {
         "cat /srv/app/key.pem",
         "cat ~/.netrc",
         "cat .e*",
+        "cat .env.p*",
+        "cat .env.[p]roduction",
+        "cat /srv/app/p*.pem",
+        "cat /srv/app/key.p[e]m",
+        "cat /srv/app/site.pe?",
+        "cat /srv/app/*.PEM",
+        "cat /srv/keys/id_r*",
+        "cat /srv/keys/i?_ed25519",
+        "cat .NETR?",
         "cat /etc/sha*",
         "cat /etc/*",
         "cat ~/.ssh/*",
@@ -4389,6 +4515,10 @@ mod tests {
         for c in ["ps -E", "ps auxE", "ps e", "ps axeww"] {
             assert!(!read_only(c, HOME, true), "{c:?}");
             assert!(!read_only(c, HOME, false), "{c:?}");
+        }
+        // A failed reading makes procps read them BSD style, `e` included.
+        for c in ["ps -auxe", "ps -aue", "ps -e -u x", "ps -eS", "ps -ef -p x"] {
+            assert!(!read_only(c, HOME, true), "{c:?}");
         }
         // Option values are skipped, and a BSD-style word with no `e` is fine:
         // these stay read-only on either kernel.
@@ -5221,6 +5351,19 @@ mod tests {
         let bare = parse("c${x}url $y'z'").unwrap_or_default();
         let joined = join_words(&bare);
         assert_eq!(joined, "curl z");
+    }
+
+    #[test]
+    fn a_glob_aims_at_a_secret_name_with_its_own_text() {
+        for (pat, shape) in [(".env.p*", ".env.*"), ("p*.pem", "*.pem"), ("key.p[e]m", "*.pem"), ("*.ke?", "*.key"), ("id_r*", "id_rsa*"), ("*rsa", "id_rsa*")] {
+            assert!(aims_at(pat, shape), "{pat:?} {shape:?}");
+        }
+        for (pat, shape) in [("*.log", "id_rsa*"), ("syslog.*", "*.pem"), ("access*", "*.pem"), ("*", "*.pem"), ("*m", "*.pem"), ("*.py*", "*.pem"), ("*.env*", ".env.*"), ("?env.x", ".env.*")] {
+            assert!(!aims_at(pat, shape), "{pat:?} {shape:?}");
+        }
+        for (shape, n) in SECRET_SHAPES {
+            assert!(secret_by_name(n) && glob_match(shape, n), "{shape:?} {n:?}");
+        }
     }
 
     #[test]

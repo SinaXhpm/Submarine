@@ -20,6 +20,13 @@ const ago = (unix: number) => {
   return new Date(unix * 1000).toLocaleDateString();
 };
 
+/** The servers that `chats` belong to, as [uuid, name] pairs. */
+const serversOf = (chats: ChatSummary[]): [string, string][] => {
+  const m = new Map<string, string>();
+  for (const c of chats) if (c.server_uuid) m.set(c.server_uuid, c.server_label ?? "Server");
+  return [...m.entries()];
+};
+
 interface Props {
   active: boolean;
   /** The connected SSH session of each saved server, by uuid. */
@@ -36,6 +43,9 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
   const [open, setOpen] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<string>("all");
+  // The filter box's servers, from the last load of all chats: a filtered
+  // list leaves the other servers out, and an empty one the box itself.
+  const [allServers, setAllServers] = useState<[string, string][]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [activity, setActivity] = useState(false);
@@ -62,10 +72,17 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
     return true;
   }, []);
 
+  // Only the last load's answer counts: an earlier one, with another search
+  // or filter, can come later.
+  const chatsSeq = useRef(0);
   const reloadChats = useCallback(async () => {
+    const seq = ++chatsSeq.current;
     try {
       const f = filter === "all" ? { kind: "all" as const } : filter === "plain" ? { kind: "plain" as const } : { kind: "server" as const, server_uuid: filter };
-      setChats(await ai.chats(f, search));
+      const list = await ai.chats(f, search);
+      if (seq !== chatsSeq.current) return;
+      setChats(list);
+      if (f.kind === "all" && !search) setAllServers(serversOf(list));
       setError(null);
     } catch (e) {
       setError(errText(e));
@@ -104,11 +121,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
     return () => window.clearInterval(t);
   }, [active, chats, reloadChats]);
 
-  const servers = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const c of chats) if (c.server_uuid) m.set(c.server_uuid, c.server_label ?? "Server");
-    return [...m.entries()];
-  }, [chats]);
+  const servers = useMemo(() => [...new Map([...allServers, ...serversOf(chats)]).entries()], [allServers, chats]);
 
   const newChat = async () => {
     if (busyRef.current) {
@@ -230,7 +243,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
                 className={`w-full ${compact ? "h-10" : "h-8"} pl-8 pr-2 bg-zinc-950 border border-white/10 rounded-lg text-[12px] text-zinc-200 focus:outline-none focus:border-primary/50`}
               />
             </div>
-            {servers.length > 0 && (
+            {(servers.length > 0 || filter !== "all") && (
               <select value={filter} onChange={(e) => setFilter(e.target.value)} className={`w-full ${compact ? "h-10" : "h-8"} px-2 bg-zinc-950 border border-white/10 rounded-lg text-[12px] text-zinc-300`}>
                 <option value="all">All chats</option>
                 <option value="plain">Plain chats</option>

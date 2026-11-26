@@ -818,6 +818,11 @@ export function parseInline(src: string, refs: RefMap): Inline[] {
   // "[" before this position can't make links any more: a link was made
   // after them, and links don't go inside links.
   let noLinksBefore = -1;
+  // An "http://" before this position isn't a bare link: it is inside a run
+  // of text without blanks where an earlier one failed. Each try reads and
+  // parses the run to its end, so trying them all made a long run with many
+  // of them quadratic.
+  let noBareBefore = -1;
   let from = 0; // start of the text not yet added
   let pos = 0;
 
@@ -1067,15 +1072,18 @@ export function parseInline(src: string, refs: RefMap): Inline[] {
     } else {
       // "http://" or "https://", a bare link when it starts a word
       const scheme = m[0].length;
-      if (at > 0 && /[A-Za-z0-9]/.test(src[at - 1])) {
+      if (at < noBareBefore || (at > 0 && /[A-Za-z0-9]/.test(src[at - 1]))) {
         pos = at + 1;
         continue;
       }
-      let e = at + scheme;
-      while (e < src.length && src[e] !== "<" && !WS.test(src[e])) e++;
-      e = bareUrlEnd(src, at, e);
+      let runEnd = at + scheme;
+      // Inside "[", a "]" ends it: "[https://x.org/a](https://x.org/a)" is
+      // one link, not "[" and a link to "https://x.org/a](https://x.org/a)".
+      while (runEnd < src.length && src[runEnd] !== "<" && !WS.test(src[runEnd]) && !(brackets && src[runEnd] === "]")) runEnd++;
+      const e = bareUrlEnd(src, at, runEnd);
       const url = e > at + scheme ? safeUrl(src.slice(at, e)) : null;
       if (!url) {
+        noBareBefore = runEnd;
         pos = at + scheme;
         continue;
       }

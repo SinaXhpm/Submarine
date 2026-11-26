@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -423,8 +424,9 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
 
   const availableToAdd = useMemo(
     // Only an SSH server has a shell to read numbers from (not RDP, issue
-    // #3, or telnet, #179).
-    () => servers.filter((s: any) => (s.protocol ?? "ssh") === "ssh" && !rows.some((r) => r.node_id === s.id)),
+    // #3, or telnet, #179), and one reached directly: the poller doesn't go
+    // through a jump host.
+    () => servers.filter((s: any) => (s.protocol ?? "ssh") === "ssh" && !s.jump_host_id && !rows.some((r) => r.node_id === s.id)),
     [servers, rows]
   );
   const anyRunning = rows.some((r) => !r.paused);
@@ -525,8 +527,9 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
         )}
       </div>
 
-      {/* Floating toast */}
-      {toast && (
+      {/* Floating toast. On the page itself, not in this view: an outage
+          toast comes while another view shows, and this one is hidden then. */}
+      {toast && createPortal(
         <div className="fixed bottom-5 right-6 z-[60] pointer-events-none">
           <div className={`px-3.5 py-2.5 rounded-lg shadow-2xl border font-mono text-[12px] flex items-start gap-2 max-w-[420px] ${
             toast.tone === "err" ? "bg-rose-950/90 border-rose-500/50 text-rose-100" :
@@ -538,7 +541,8 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
                                     <Bell size={14} className="mt-0.5 shrink-0" />}
             <span>{toast.msg}</span>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Configure slide-over */}
