@@ -9,9 +9,12 @@ name: Google Play
 #   upload  sends it with the Play service account, running one script that
 #           uses only Node's own modules (scripts/play-upload.mjs).
 # Google re-signs what it delivers with the app signing key (Play App
-# Signing), the same key as the APKs on GitHub, so the two can update each
-# other. Play registered that key as the upload key too, so the bundle is
-# signed with it (no separate upload key).
+# Signing), the same key as the APKs on GitHub. Play registered that key as
+# the upload key too, so the bundle is signed with it (no separate upload key).
+#
+# On Google Play the app is com.sinaxhpm.submarine (its App Store ID), while
+# the GitHub APK is com.submarine.app: two separate apps on a phone, so the
+# Play copy and the APK don't update each other.
 #
 # The Play build has no GitHub update check (the `app-store` feature, as for
 # the Mac App Store): Google Play's rules allow updates only through Play.
@@ -151,8 +154,10 @@ jobs:
         run: npm ci
 
       # No signing secret in this job: Gradle leaves the bundle unsigned.
+      # The Play app ID goes to Gradle as a project property (build.gradle.kts).
       - name: Build the App Bundle
         env:
+          ORG_GRADLE_PROJECT_submarineApplicationId: com.sinaxhpm.submarine
           NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: npm run android:build:play
@@ -169,6 +174,12 @@ jobs:
           # A signature here would mean this job had a key after all.
           if unzip -Z1 "${found[0]}" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then
             echo "::error::The bundle came out signed, but this job must not have a key."
+            exit 1
+          fi
+          # The manifest must carry the Play app ID, or Play refuses the bundle.
+          unzip -p "${found[0]}" base/manifest/AndroidManifest.xml > "$RUNNER_TEMP/manifest.pb"
+          if ! grep -aq "com.sinaxhpm.submarine" "$RUNNER_TEMP/manifest.pb"; then
+            echo "::error::The bundle is not built as com.sinaxhpm.submarine."
             exit 1
           fi
           cp "${found[0]}" "artifacts/Submarine-v${VERSION}-play-unsigned.aab"
@@ -287,7 +298,7 @@ jobs:
             echo "::error::Missing GitHub Secret PLAY_SERVICE_ACCOUNT_JSON."
             exit 1
           fi
-          args=(--package com.submarine.app --aab "$(ls signed/*.aab)" --track "$TRACK" --status "$STATUS" --name "${INPUT_VERSION#v}")
+          args=(--package com.sinaxhpm.submarine --aab "$(ls signed/*.aab)" --track "$TRACK" --status "$STATUS" --name "${INPUT_VERSION#v}")
           if [ -n "$NOTES" ]; then
             printf '%s' "$NOTES" > "$RUNNER_TEMP/notes.txt"
             args+=(--notes "$RUNNER_TEMP/notes.txt")
