@@ -263,9 +263,14 @@ impl RdpdrBackend for NixRdpdrBackend {
                     output_buffer: None,
                 }),
             )]),
-            ServerDriveIoRequest::ServerDriveLockControlRequest(_) => {
-                // TODO
-                Ok(Vec::new())
+            ServerDriveIoRequest::ServerDriveLockControlRequest(req_inner) => {
+                // Not locked here, but answered, as FreeRDP does: a program on
+                // the server would otherwise wait for the answer for good.
+                Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveLockControlResponse(
+                    ClientDriveLockControlResponse {
+                        device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
+                    },
+                ))])
             }
             ServerDriveIoRequest::ServerDriveQuerySecurityRequest(req_inner) => Ok(vec![SvcMessage::from(
                 RdpdrPdu::ClientDriveQuerySecurityResponse(ClientDriveQuerySecurityResponse {
@@ -591,6 +596,20 @@ pub(crate) fn query_volume_information(
     }
 }
 
+/// Whether `a` and `b` name the same file (a link as itself).
+fn same_file(a: &str, b: &str) -> bool {
+    match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+        _ => false,
+    }
+}
+
+/// Whether `to` names a file other than `from`. The same file isn't: a rename
+/// that only changes the case on a case-insensitive disk (macOS).
+fn taken_by_another(from: &str, to: &str) -> bool {
+    std::fs::symlink_metadata(to).is_ok() && !same_file(from, to)
+}
+
 pub(crate) fn set_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
@@ -601,6 +620,15 @@ pub(crate) fn set_information(
                 FileInformationClass::Rename(info) => {
                     let mut to = backend.file_base.clone();
                     to.push_str(&info.file_name.replace('\\', "/"));
+                    // Without "replace if exists" a name in use is refused, as
+                    // on Windows: rename() would replace that file silently.
+                    if matches!(info.replace_if_exists, Boolean::False) && taken_by_another(file, &to) {
+                        let res = RdpdrPdu::ClientDriveSetInformationResponse(
+                            ClientDriveSetInformationResponse::new(&req_inner, NtStatus::OBJECT_NAME_COLLISION)
+                                .map_err(|e| encode_err!(e))?,
+                        );
+                        return Ok(vec![SvcMessage::from(res)]);
+                    }
                     if let Err(error) = std::fs::rename(file, to) {
                         warn!(?error, "Rename file error");
                         let res = RdpdrPdu::ClientDriveSetInformationResponse(
@@ -613,16 +641,31 @@ pub(crate) fn set_information(
                 FileInformationClass::Allocation(_) => {
                     //nothing to do
                 }
-                FileInformationClass::Disposition(_) => {
-                    if let Err(error) = std::fs::remove_file(file) {
+                // DeletePending off asks for no delete. A folder goes with
+                // remove_dir, once empty: remove_file can't delete one. The
+                // shared folder itself stays, as on Windows.
+                FileInformationClass::Disposition(info) if info.delete_pending != 0 => {
+                    let gone = if same_file(file, &backend.file_base) {
+                        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                    } else if std::fs::symlink_metadata(file).is_ok_and(|m| m.is_dir()) {
+                        std::fs::remove_dir(file)
+                    } else {
+                        std::fs::remove_file(file)
+                    };
+                    if let Err(error) = gone {
                         warn!(?error, "Remove file error");
+                        let status = match error.kind() {
+                            std::io::ErrorKind::DirectoryNotEmpty => NtStatus::DIRECTORY_NOT_EMPTY,
+                            std::io::ErrorKind::PermissionDenied => NtStatus::ACCESS_DENIED,
+                            _ => NtStatus::UNSUCCESSFUL,
+                        };
                         let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                            ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)
-                                .map_err(|e| encode_err!(e))?,
+                            ClientDriveSetInformationResponse::new(&req_inner, status).map_err(|e| encode_err!(e))?,
                         );
                         return Ok(vec![SvcMessage::from(res)]);
                     }
                 }
+                FileInformationClass::Disposition(_) => {}
                 FileInformationClass::EndOfFile(info) => {
                     if let Some(file) = backend.file_map.get(&req_inner.device_io_request.file_id) {
                         // SAFETY: the file must has been opened with write access in the last steps, since rdp prepares to set information. In addition it is a regular file.
@@ -717,7 +760,9 @@ pub(crate) fn make_query_dir_resp(
                 0
             };
             let file_name = &file_full_path[file_last_slash..];
-            match std::fs::metadata(&file_full_path) {
+            // A link whose target is gone shows as the link itself: failing
+            // here would end the whole listing at it.
+            match std::fs::metadata(&file_full_path).or_else(|_| std::fs::symlink_metadata(&file_full_path)) {
                 Ok(meta) => {
                     let file_attribute = get_file_attributes(&meta, file_name);
                     if file_class == FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION {

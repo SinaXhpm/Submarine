@@ -20,6 +20,14 @@ The first two are for one thing: a folder as the root.
    limit a server could use up the file handles of the whole process.
 4. `src/nix/backend.rs`, `FILE_FS_VOLUME_INFORMATION`: the volume's serial number, made from its free blocks,
    no longer panics when they don't fit in 32 bits (a large free volume).
+5. `src/nix/backend.rs`, `set_information`: a rename without `ReplaceIfExists` onto a name in use is answered
+   `OBJECT_NAME_COLLISION` (it replaced that file); a delete removes a folder too (once empty,
+   `DIRECTORY_NOT_EMPTY` before), never the shared folder itself (`ACCESS_DENIED`), and nothing when
+   `DeletePending` is off.
+6. `src/nix/backend.rs`, `make_query_dir_resp`: a link whose target is gone is listed as the link; the listing
+   ended there.
+7. `src/nix/backend.rs`, lock control: a request is answered `SUCCESS`, as FreeRDP does, without locking; it
+   got no answer at all.
 
 A folder can't be given a drive letter of its own instead (`subst`): Windows refuses to open such a letter
 with `OBJ_DONT_REPARSE` (`STATUS_REPARSE_POINT_ENCOUNTERED`), which this backend uses for every open.

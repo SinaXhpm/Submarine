@@ -298,6 +298,11 @@ async fn stream(mut resp: reqwest::Response, kind: Kind, mut stop: tokio::sync::
     if *stop.borrow() {
         return Err(Fail::Stopped(partial));
     }
+    // One deadline for the whole read, moved on by each chunk. A timeout
+    // made inside the loop would start again each time the batch tick won
+    // the select, every 40 ms, and so never end.
+    let idle = tokio::time::sleep(IDLE);
+    tokio::pin!(idle);
     loop {
         tokio::select! {
             changed = stop.changed() => {
@@ -307,12 +312,13 @@ async fn stream(mut resp: reqwest::Response, kind: Kind, mut stop: tokio::sync::
                 }
             }
             _ = tick.tick() => flush(&mut text, &mut thinking, emit),
-            chunk = tokio::time::timeout(IDLE, resp.chunk()) => {
+            _ = &mut idle => return Err(Fail::Provider(ProviderError::ours("timeout", "the provider sent nothing for 2 minutes"), partial)),
+            chunk = resp.chunk() => {
+                idle.as_mut().reset(tokio::time::Instant::now() + IDLE);
                 let bytes = match chunk {
-                    Err(_) => return Err(Fail::Provider(ProviderError::ours("timeout", "the provider sent nothing for 2 minutes"), partial)),
-                    Ok(Err(e)) => return Err(Fail::Provider(ProviderError::ours("connection", crate::cloud::describe_send_error(&e)), partial)),
-                    Ok(Ok(None)) => break,
-                    Ok(Ok(Some(b))) => b,
+                    Err(e) => return Err(Fail::Provider(ProviderError::ours("connection", crate::cloud::describe_send_error(&e)), partial)),
+                    Ok(None) => break,
+                    Ok(Some(b)) => b,
                 };
                 let events = framer.push(&bytes).map_err(|e| Fail::Provider(ProviderError::bad_reply(e), partial.clone()))?;
                 for ev in events {
@@ -625,6 +631,23 @@ async fn answer(app: &tauri::AppHandle, run_id: u64, chat_id: i64, generation: u
             .await?;
             return Ok("refused".into());
         }
+        if !has_answer(&reply.turn) {
+            // A reply with no text and no call isn't stored either: providers
+            // refuse a history with an empty answer in it, so every later
+            // message in the chat would fail. The chat says what happened,
+            // and Retry asks again.
+            let note = if reply.stop == Stop::CutOff {
+                "The reply reached the output limit before any answer."
+            } else {
+                "The model sent an empty reply."
+            };
+            with_store_at(generation, move |s| {
+                s.add_note(chat_id, "empty", note)?;
+                s.save()
+            })
+            .await?;
+            return Ok("empty".into());
+        }
         let calls: Vec<(String, String, Value)> = reply
             .turn
             .blocks
@@ -724,6 +747,16 @@ async fn answer(app: &tauri::AppHandle, run_id: u64, chat_id: i64, generation: u
     })
     .await?;
     Ok("end".into())
+}
+
+/// Whether a reply says or does anything: some text, or a tool call.
+/// Reasoning alone isn't an answer.
+fn has_answer(turn: &Turn) -> bool {
+    turn.blocks.iter().any(|b| match b {
+        canon::Block::Text { text } => !text.trim().is_empty(),
+        canon::Block::ToolCall { .. } => true,
+        _ => false,
+    })
 }
 
 /// A request's input tokens, cache included: Anthropic counts the cached part
@@ -910,6 +943,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_empty_or_thinking_only_reply_is_no_answer() {
+        let turn = |blocks: Vec<canon::Block>| Turn { role: Role::Assistant, blocks };
+        assert!(!has_answer(&turn(vec![])));
+        assert!(!has_answer(&turn(vec![canon::Block::Text { text: " \n".into() }])));
+        assert!(!has_answer(&turn(vec![canon::Block::Reasoning { text: "hmm".into() }])));
+        assert!(has_answer(&turn(vec![canon::Block::Text { text: "Done.".into() }])));
+        assert!(has_answer(&turn(vec![canon::Block::ToolCall { id: "a".into(), name: "read_file".into(), input: json!({}) }])));
+    }
+
+    #[test]
     fn server_text_in_a_transcript_cant_pass_for_the_user() {
         let row = |seq: i64, role: Role, blocks: Vec<canon::Block>| TurnRow { seq, turn: Turn { role, blocks }, renders: serde_json::Map::new() };
         let rows = vec![
@@ -1031,6 +1074,49 @@ mod tests {
         let e = send_within(Duration::from_millis(300), &client, reqwest::Method::GET, &format!("{base}/models"), &[], None).await.unwrap_err();
         assert!(e.starts_with("[AI] TIMEOUT"), "{e}");
         silent.abort();
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_goes_silent_ends_after_two_minutes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (done, held) = tokio::sync::oneshot::channel::<()>();
+        // Starts a streamed reply, sends one piece of it, and then nothing,
+        // with the connection still open.
+        let server = tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut got: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = conn.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            let piece = "event: ping\ndata: {\"type\":\"ping\"}\n\n";
+            let head = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{piece}\r\n", piece.len());
+            conn.write_all(head.as_bytes()).await.unwrap();
+            let _ = held.await;
+            drop(conn);
+        });
+        let client = net::client(&base, &Via::Direct).unwrap();
+        let resp = client.get(format!("{base}/messages")).send().await.unwrap();
+        // From here the clock moves on whenever everything waits.
+        tokio::time::pause();
+        let (_keep, never) = tokio::sync::watch::channel(false);
+        let started = tokio::time::Instant::now();
+        let out = tokio::time::timeout(Duration::from_secs(600), stream(resp, Kind::Anthropic, never, &mut |_: AiEvent| {})).await;
+        match out {
+            Ok(Err(Fail::Provider(e, _))) => assert!(e.to_user().contains("sent nothing for 2 minutes"), "{}", e.to_user()),
+            Ok(Err(Fail::Stopped(_))) => panic!("stopped"),
+            Ok(Ok(_)) => panic!("the reply ended"),
+            Err(_) => panic!("still waiting after 10 minutes"),
+        }
+        assert!(started.elapsed() >= IDLE && started.elapsed() < IDLE + Duration::from_secs(1));
+        let _ = done.send(());
+        server.abort();
     }
 
     #[tokio::test]

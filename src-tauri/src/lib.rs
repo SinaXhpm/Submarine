@@ -4274,6 +4274,19 @@ mod sync_engine_tests {
         assert_eq!(decrypt_entity(&blob, &dek2).unwrap(), b"{\"host\":\"h\"}");
     }
 
+    // The poller dials a server itself, so one behind a jump host isn't
+    // monitored (it was dialed directly, around the jump host).
+    #[test]
+    fn a_server_behind_a_jump_host_is_not_monitored() {
+        let (a, _h) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('hop','j.example',22)", []).unwrap();
+        a.execute("INSERT INTO servers(name,host,port,jump_host_id) VALUES('web','w.example',22,(SELECT id FROM servers WHERE name='hop'))", []).unwrap();
+        let id = |n: &str| a.query_row("SELECT id FROM servers WHERE name=?1", [n], |r| r.get::<_, i32>(0)).unwrap();
+        let err = resolve_node_auth_for_monitor(&a, id("web")).err().unwrap();
+        assert!(err.contains("jump host"), "{err}");
+        assert_eq!(resolve_node_auth_for_monitor(&a, id("hop")).unwrap().host, "j.example");
+    }
+
     fn device(node: &str) -> (Connection, std::sync::Arc<hlc::Hlc>) {
         device_with(node, false)
     }
@@ -8623,8 +8636,11 @@ async fn save_quick_connect_node(
 
 #[tauri::command]
 async fn edit_server(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DbState>,
     ssh_state: tauri::State<'_, SshState>,
+    monitors: tauri::State<'_, MonitorMap>,
+    settings: tauri::State<'_, SharedSettings>,
     id: i32,
     name: String,
     host: String,
@@ -8730,6 +8746,13 @@ async fn edit_server(
             .lock()
             .await
             .remove(&format!("session-{}", id));
+    }
+    // A running monitor of this server logs in again with the new details.
+    // The edit is saved either way.
+    if monitor::list(monitors.inner().clone()).await.iter().any(|m| m.node_id == id && !m.paused) {
+        if let Err(e) = restart_monitor(app, &state, monitors.inner(), settings.inner(), id).await {
+            eprintln!("[monitor] couldn't restart the monitor of server {id} after an edit: {e}");
+        }
     }
     Ok(())
 }
@@ -26490,7 +26513,7 @@ fn resolve_node_auth_for_monitor(
                s.password, c.password,
                s.key_id,   c.key_id,
                s.auth_type, c.auth_type as cred_auth_type,
-               s.proxy_type, s.proxy_host, s.proxy_port, s.protocol
+               s.proxy_type, s.proxy_host, s.proxy_port, s.protocol, s.jump_host_id
         FROM servers s
         LEFT JOIN credentials c ON s.credential_id = c.id
         WHERE s.id = ?1
@@ -26514,6 +26537,11 @@ fn resolve_node_auth_for_monitor(
     // An RDP server has no shell to read numbers from (issue #3).
     if row.get::<_, Option<String>>(13).ok().flatten().as_deref() == Some("rdp") {
         return Err("an RDP server can't be monitored".into());
+    }
+    // The poller dials the server itself; one behind a jump host would be
+    // reached around it, or not at all.
+    if row.get::<_, Option<i64>>(14).ok().flatten().is_some() {
+        return Err("a server reached through a jump host can't be monitored yet".into());
     }
 
     let (username, password, key_id) = if auth_type == "vault" {
@@ -26850,36 +26878,32 @@ async fn monitor_resume(
     if let Some(on) = use_ssh_agent {
         monitor::set_use_agent(on);
     }
-    let (auth, metrics, customs, name) = {
+    {
         let guard = db_state.conn.lock().map_err(|_| "lock")?;
         let conn = guard.as_ref().ok_or("db not ready")?;
         let (metrics, customs, _) = load_monitor_config(conn, node_id)
             .ok_or_else(|| format!("Node {} is not in the monitor list", node_id))?;
         upsert_monitor_config(conn, node_id, &metrics, &customs, false)?;
+    }
+    save_vault_internal(&db_state)?;
+    // Always a new poller: a paused one keeps the login it was started with,
+    // and the server may have been edited since.
+    restart_monitor(app, &db_state, map.inner(), settings.inner(), node_id).await
+}
+
+/// Starts `node_id`'s poller again with what the vault holds now. A poller
+/// keeps the login it was started with, so an edited server needs a new one.
+async fn restart_monitor(app: tauri::AppHandle, db_state: &DbState, map: &MonitorMap, settings: &SharedSettings, node_id: i32) -> Result<(), String> {
+    let (auth, metrics, customs, name) = {
+        let guard = db_state.conn.lock().map_err(|_| "lock")?;
+        let conn = guard.as_ref().ok_or("db not ready")?;
+        let (metrics, customs, _) = load_monitor_config(conn, node_id).unwrap_or((default_metrics(), vec![], false));
         let name = fetch_node_name(conn, node_id);
         // Commands held for this device's OK don't run (see approvals.rs).
         let customs = approvals::without_held_metrics(conn, approvals::server_uuid(conn, node_id as i64).as_deref(), customs);
         (resolve_node_auth_for_monitor(conn, node_id)?, metrics, customs, name)
     };
-    save_vault_internal(&db_state)?;
-
-    // If a poller already exists, just hot-flip paused; otherwise spawn one.
-    if monitor::set_paused(map.inner().clone(), node_id, false).await.is_err() {
-        let db_arc = std::sync::Arc::clone(&db_state.conn);
-        let settings_arc: SharedSettings = (*settings.inner()).clone();
-        monitor::start_monitor(
-            app,
-            map.inner().clone(),
-            db_arc,
-            settings_arc,
-            node_id,
-            name,
-            auth,
-            metrics,
-            customs,
-            false,
-        ).await;
-    }
+    monitor::start_monitor(app, map.clone(), std::sync::Arc::clone(&db_state.conn), settings.clone(), node_id, name, auth, metrics, customs, false).await;
     Ok(())
 }
 
@@ -26941,36 +26965,21 @@ async fn monitor_resume_all(
     };
     save_vault_internal(&db_state)?;
 
-    // Start (or hot-resume) each one.
+    // A new poller for each paused or missing one (a paused one keeps the
+    // login it was started with); running ones go on as they are.
+    let running: std::collections::HashSet<i32> =
+        monitor::list(map.inner().clone()).await.into_iter().filter(|m| !m.paused).map(|m| m.node_id).collect();
+    // One that can't start (say it now goes through a jump host) doesn't
+    // keep the rest from starting; its error is the answer.
+    let mut first_error = None;
     for node_id in node_ids {
-        if monitor::set_paused(map.inner().clone(), node_id, false).await.is_err() {
-            let (auth, metrics, customs, name) = {
-                let guard = db_state.conn.lock().map_err(|_| "lock")?;
-                let conn = guard.as_ref().ok_or("db not ready")?;
-                let (metrics, customs, _) = load_monitor_config(conn, node_id)
-                    .unwrap_or((default_metrics(), vec![], false));
-                let name = fetch_node_name(conn, node_id);
-                // Commands held for this device's OK don't run (see approvals.rs).
-                let customs = approvals::without_held_metrics(conn, approvals::server_uuid(conn, node_id as i64).as_deref(), customs);
-                (resolve_node_auth_for_monitor(conn, node_id)?, metrics, customs, name)
-            };
-            let db_arc = std::sync::Arc::clone(&db_state.conn);
-            let settings_arc: SharedSettings = (*settings.inner()).clone();
-            monitor::start_monitor(
-                app.clone(),
-                map.inner().clone(),
-                db_arc,
-                settings_arc,
-                node_id,
-                name,
-                auth,
-                metrics,
-                customs,
-                false,
-            ).await;
+        if !running.contains(&node_id) {
+            if let Err(e) = restart_monitor(app.clone(), &db_state, map.inner(), settings.inner(), node_id).await {
+                first_error.get_or_insert(e);
+            }
         }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 /// The clipboard's text, for a paste. The Windows, Linux and Android

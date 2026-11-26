@@ -150,13 +150,13 @@ const ACTION_LABELS: Record<string, string> = {
 // An action's result as a whole line per action, so a translation needn't put
 // the English command word into its own sentence.
 const ACTION_OK: Record<string, string> = {
-  start: tk("start ok"), pause: tk("pause ok"), stop: tk("stop ok"), restart: tk("restart ok"),
+  start: tk("start ok"), pause: tk("pause ok"), unpause: tk("resume ok"), stop: tk("stop ok"), restart: tk("restart ok"),
 };
 const ACTION_OK_SUDO: Record<string, string> = {
-  start: tk("start ok (via sudo)"), pause: tk("pause ok (via sudo)"), stop: tk("stop ok (via sudo)"), restart: tk("restart ok (via sudo)"),
+  start: tk("start ok (via sudo)"), pause: tk("pause ok (via sudo)"), unpause: tk("resume ok (via sudo)"), stop: tk("stop ok (via sudo)"), restart: tk("restart ok (via sudo)"),
 };
 const ACTION_FAILED: Record<string, string> = {
-  start: tk("start failed"), pause: tk("pause failed"), stop: tk("stop failed"), restart: tk("restart failed"),
+  start: tk("start failed"), pause: tk("pause failed"), unpause: tk("resume failed"), stop: tk("stop failed"), restart: tk("restart failed"),
 };
 
 // Mobile-first sizing: h-9 (36 px) keeps the tap target above 32 px on
@@ -402,9 +402,12 @@ const ContainersView = ({
   if (state.error) return <ErrorBanner err={state.error} />;
   if (!state.data) return null;
 
+  // A paused container is still up, as `docker ps` lists it: it stays in the
+  // running list, where it can be resumed.
+  const up = (c: Container) => c.state === "running" || c.state === "paused";
   const filtered = state.data.filter(c => {
-    if (stateFilter === "running" && c.state !== "running") return false;
-    if (stateFilter === "stopped" && c.state === "running") return false;
+    if (stateFilter === "running" && !up(c)) return false;
+    if (stateFilter === "stopped" && up(c)) return false;
     if (filter.trim()) {
       const f = filter.toLowerCase();
       if (!c.names.toLowerCase().includes(f) && !c.image.toLowerCase().includes(f) && !c.id.toLowerCase().includes(f)) return false;
@@ -413,8 +416,8 @@ const ContainersView = ({
   });
 
   const counts = {
-    running: state.data.filter(c => c.state === "running").length,
-    stopped: state.data.filter(c => c.state !== "running").length,
+    running: state.data.filter(up).length,
+    stopped: state.data.filter(c => !up(c)).length,
     all: state.data.length,
   };
 
@@ -493,9 +496,15 @@ const ContainersView = ({
                     )}
                     {isRunning && (
                       <>
-                        <ActionBtn title={t("Pause")} disabled={!!busyAction} onClick={() => doAction(c, "pause")}>
-                          {busyAction === "pause" ? <Loader2 size={11} className="animate-spin" /> : <Pause size={11} />}
-                        </ActionBtn>
+                        {c.state === "paused" ? (
+                          <ActionBtn title={t("Resume")} disabled={!!busyAction} tone="green" onClick={() => doAction(c, "unpause")}>
+                            {busyAction === "unpause" ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
+                          </ActionBtn>
+                        ) : (
+                          <ActionBtn title={t("Pause")} disabled={!!busyAction} onClick={() => doAction(c, "pause")}>
+                            {busyAction === "pause" ? <Loader2 size={11} className="animate-spin" /> : <Pause size={11} />}
+                          </ActionBtn>
+                        )}
                         <ActionBtn title={t("Stop")} disabled={!!busyAction} tone="amber" onClick={() => doAction(c, "stop", true)}>
                           {busyAction === "stop" ? <Loader2 size={11} className="animate-spin" /> : <Square size={11} />}
                         </ActionBtn>

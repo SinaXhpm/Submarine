@@ -188,6 +188,14 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
 
   const attach = readTerminal ? { selection: () => readTerminal("selection"), tail: () => readTerminal("tail") } : undefined;
   const current = chats.find((c) => c.id === chatId);
+  // The open chat answering in another view: the list is read again until
+  // that run ends, so the banner goes and the chat shows the answer.
+  const runningElsewhere = !running && current?.state === "running";
+  useEffect(() => {
+    if (!active || !runningElsewhere) return;
+    const t = window.setInterval(() => void refreshChats(), 3000);
+    return () => window.clearInterval(t);
+  }, [active, runningElsewhere, refreshChats]);
   // The name as it is now (the tab keeps the one it opened with): turning on
   // Full access asks for it to be typed.
   const currentName = info?.name || serverName;

@@ -785,7 +785,10 @@ impl Control {
                     said = Some(r);
                 }
                 h = &mut handshake, if data.is_none() => {
-                    let s = h.map_err(|e| Error::Local(format!("The data connection's TLS failed: {e}")))?;
+                    // Broken, not Local: the command was sent, so an answer to
+                    // it (a 1xx, then a 4xx) is still on its way, and the next
+                    // command would read that one as its own.
+                    let s = h.map_err(|e| Error::Broken(format!("The data connection's TLS failed: {e}")))?;
                     data = Some(s);
                 }
             }
@@ -1219,15 +1222,35 @@ fn parse_dos_line(line: &str) -> Option<Entry> {
 /// A `Dial` straight to the server.
 pub fn dial_direct(host: &str) -> Dial {
     let host = host.trim().to_string();
+    // The address the first connection (the control one) reached. The ones
+    // after it go there too, not to a new lookup of the name: a name with
+    // more than one address, or one that changes, could send a data
+    // connection to another machine, and on plain FTP a hostile name could
+    // point it at a port on the user's own network.
+    let reached: Arc<std::sync::Mutex<Option<std::net::IpAddr>>> = Arc::default();
     Arc::new(move |port| {
-        let host = host.clone();
+        let (host, reached) = (host.clone(), Arc::clone(&reached));
         Box::pin(async move {
             let address = crate::telnet::address(&host, port);
-            let sock = match tokio::time::timeout(CONNECT_TIME, tokio::net::TcpStream::connect((host.as_str(), port))).await {
+            let known = *reached.lock().unwrap_or_else(|e| e.into_inner());
+            let connect = async {
+                match known {
+                    Some(ip) => tokio::net::TcpStream::connect((ip, port)).await,
+                    // Each of the name's addresses in turn, as SSH and telnet do.
+                    None => crate::dial::connect((host.as_str(), port)).await,
+                }
+            };
+            let sock = match tokio::time::timeout(CONNECT_TIME, connect).await {
                 Ok(Ok(s)) => s,
                 Ok(Err(e)) => return Err(format!("Couldn't reach {address}: {e}")),
                 Err(_) => return Err(format!("{address} didn't answer within 15 seconds")),
             };
+            if known.is_none() {
+                match sock.peer_addr() {
+                    Ok(peer) => *reached.lock().unwrap_or_else(|e| e.into_inner()) = Some(peer.ip()),
+                    Err(e) => return Err(format!("Couldn't reach {address}: {e}")),
+                }
+            }
             crate::tunnel::apply_tunnel_sockopts(&sock);
             let _ = sock.set_nodelay(true);
             Ok(Box::new(sock) as Stream)

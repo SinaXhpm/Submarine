@@ -600,11 +600,9 @@ async fn run_poller(
                 Ok(h) => {
                     handle = Some(h);
                     backoff = Duration::from_secs(2);
-                    let was_outage_threshold = {
-                        let s = entry.state.lock().await;
-                        s.consecutive_failures >= threshold
-                    };
-                    record_recovery(&app, &entry, &node_name, notify, was_outage_threshold).await;
+                    // Not a recovery yet: only a sample is (below). A server
+                    // that takes the login but fails each probe would else
+                    // count 0, 1, 0, 1 and never reach the outage threshold.
                     mark_connected(&app, &entry).await;
                     // Reset differential baseline so the first sample after
                     // reconnect doesn't produce a giant nonsense CPU/net spike.

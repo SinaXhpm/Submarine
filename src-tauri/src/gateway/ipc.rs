@@ -64,9 +64,20 @@ pub fn own_program() -> Result<std::path::PathBuf, String> {
     std::fs::canonicalize(&exe).map_err(|e| format!("[GATEWAY] OWN_PATH: {e}"))
 }
 
+/// The file an agent starts to run this copy. Run from an AppImage, that is
+/// the AppImage: the program inside lives in a folder it is mounted on anew,
+/// under another name, each time it runs.
+pub fn launcher() -> Result<std::path::PathBuf, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(image) = std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()) {
+        return std::fs::canonicalize(image).map_err(|e| format!("[GATEWAY] OWN_PATH: {e}"));
+    }
+    own_program()
+}
+
 /// The endpoint of this user and this copy: a pipe name, or a socket path.
 pub fn endpoint() -> Result<String, String> {
-    let id = id_for(&imp::user()?, &own_program()?);
+    let id = id_for(&imp::user()?, &launcher()?);
     imp::named(&id)
 }
 

@@ -820,7 +820,9 @@ impl Hub {
             error,
             longest_minutes: config.longest_minutes,
             profile_open: self.profile().is_some(),
-            program: ipc::own_program().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            // Without `\\?\` in front where Windows allows: it goes into the
+            // agents' settings.
+            program: ipc::launcher().map(|p| crate::display_path(&p)).unwrap_or_default(),
             offered: tools::OFFERED.to_vec(),
             connections,
             requests,

@@ -281,19 +281,33 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
     const onMouseMove = (e: React.MouseEvent) => {
       if (!fromTouch()) move(e.clientX, e.clientY);
     };
+    // The buttons pressed on the screen and not let go there yet.
+    const held = useRef(new Set<number>());
     const onMouseDown = (e: React.MouseEvent) => {
       e.preventDefault();
       if (fromTouch()) return;
       canvasRef.current?.focus();
       move(e.clientX, e.clientY);
+      held.current.add(e.button);
       send({ t: "button", b: e.button, down: true });
     };
     const onMouseUp = (e: React.MouseEvent) => {
       e.preventDefault();
       if (fromTouch()) return;
       move(e.clientX, e.clientY);
+      held.current.delete(e.button);
       send({ t: "button", b: e.button, down: false });
     };
+    // A button let go off the screen (over the black bars, another pane or
+    // outside the window) is let go on the server too: else the server goes
+    // on dragging. The screen's own handler runs first and takes it off.
+    useEffect(() => {
+      const up = (e: MouseEvent) => {
+        if (held.current.delete(e.button)) send({ t: "button", b: e.button, down: false });
+      };
+      window.addEventListener("mouseup", up);
+      return () => window.removeEventListener("mouseup", up);
+    }, [send]);
     const onWheel = (e: React.WheelEvent) => {
       const vertical = Math.abs(e.deltaY) >= Math.abs(e.deltaX);
       const delta = vertical ? e.deltaY : e.deltaX;
@@ -316,7 +330,10 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         e.preventDefault();
       }
     };
-    const onBlur = () => send({ t: "releaseall" });
+    const onBlur = () => {
+      held.current.clear();
+      send({ t: "releaseall" });
+    };
 
     // ---- touch (a phone): tap is a click, a long press a right click,
     // dragging moves the pointer with the left button down; two fingers zoom

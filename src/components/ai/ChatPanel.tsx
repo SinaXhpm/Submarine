@@ -234,6 +234,10 @@ export const ChatPanel = ({
   const stick = useRef(true);
   const runEvent = useRef(onRunEvent);
   runEvent.current = onRunEvent;
+  // The one of now when a run ends, not the one of when it started: that one
+  // would reload the chat list with the search and filter of back then.
+  const changedRef = useRef(onChanged);
+  changedRef.current = onChanged;
   // On the AI page, the feed of the session a run acts through: its events go
   // to that session's AI terminal too, as the AI tab's do. Taken when the run
   // starts, so a later session with the same id (the next profile's) never
@@ -273,6 +277,13 @@ export const ChatPanel = ({
   }, [chatId]);
 
   const busyHere = !!live || continuing;
+
+  // A run in another view ended: its answer shows here too.
+  const wasElsewhere = useRef(elsewhere);
+  useEffect(() => {
+    if (wasElsewhere.current && !elsewhere && !busyHere) void load();
+    wasElsewhere.current = elsewhere;
+  }, [elsewhere, busyHere, load]);
   const busyRef = useRef(onBusy);
   busyRef.current = onBusy;
   useEffect(() => { busyRef.current?.(busyHere); }, [busyHere]);
@@ -360,9 +371,9 @@ export const ChatPanel = ({
       // A failed run marks its message ("No answer: …"), which the reload
       // shows; the error isn't repeated in a box of its own.
       void load().then(() => setLive(null));
-      onChanged();
+      changedRef.current();
     }
-  }, [load, onChanged]);
+  }, [load]);
 
   /** Asks once per provider before anything goes to it. The yes is for the
    *  host the dialog names: if the provider's address changed since this
@@ -525,7 +536,7 @@ export const ChatPanel = ({
       title: "Max output tokens",
       message: "Empty means the provider's default.",
       initialValue: settings?.max_tokens ? String(settings.max_tokens) : "",
-      validate: (v) => (v.trim() === "" || /^\d{1,7}$/.test(v.trim()) ? null : "A whole number"),
+      validate: (v) => (v.trim() === "" || /^[1-9]\d{0,6}$/.test(v.trim()) ? null : "A whole number from 1"),
     });
     if (t == null) return;
     void change({ max_tokens: t.trim() ? Number(t.trim()) : null });
@@ -573,6 +584,10 @@ export const ChatPanel = ({
     // the rest would read as the user's own words: they go, and the fence is
     // longer than any run of backticks inside.
     let body = (got.length > 64 * 1024 ? got.slice(-64 * 1024) : got).replace(/[\u{E0000}-\u{E007F}]/gu, "");
+    // A cut inside an emoji leaves half of it first, which the backend can't
+    // read, so the send would fail.
+    const first = body.charCodeAt(0);
+    if (first >= 0xdc00 && first <= 0xdfff) body = body.slice(1);
     let end = body.length;
     while (end > 0 && body.charCodeAt(end - 1) === 0x0a) end--;
     body = body.slice(0, end);
@@ -912,7 +927,9 @@ export const ChatPanel = ({
           onKeyDown={(e) => {
             // A phone's keyboard has no Shift+Enter: Enter makes a new line
             // there and the Send button sends (Ctrl+Enter from a real keyboard).
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && (!IS_MOBILE || e.ctrlKey || e.metaKey)) {
+            // keyCode 229: Safari's Enter that ends an IME word comes after
+            // the composition, with isComposing already false.
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229 && (!IS_MOBILE || e.ctrlKey || e.metaKey)) {
               e.preventDefault();
               send();
             }
@@ -984,7 +1001,7 @@ const Item = ({ item, onOpenLink, onInsert, onReport, onUndo, undone }: {
   undone: number[];
 }) => {
   if (item.kind === "note") {
-    const warn = item.note === "refused" || item.note === "cut_off" || item.note === "hidden";
+    const warn = item.note === "refused" || item.note === "cut_off" || item.note === "empty" || item.note === "hidden";
     return <div className={`text-center text-[11px] ${warn ? "text-amber-400/90" : "text-zinc-500"}`} dir="auto">{item.text}</div>;
   }
   if (item.kind === "user") {

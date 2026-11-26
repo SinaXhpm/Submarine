@@ -246,7 +246,10 @@ fn to_status(e: &ftp::Error) -> StatusReply {
             let t = r.said().to_ascii_lowercase();
             let code = match r.code {
                 450 | 550 => {
-                    if ["no such", "not found", "does not exist", "doesn't exist", "cannot find", "can't find", "not exist"].iter().any(|w| t.contains(w)) {
+                    // "Not a folder" is "no such file", as OpenSSH answers it: a
+                    // tree delete must not go into a link that a server lists
+                    // as a folder, which RMD then refuses as "Not a directory".
+                    if ["no such", "not found", "does not exist", "doesn't exist", "cannot find", "can't find", "not exist", "not a dir"].iter().any(|w| t.contains(w)) {
                         StatusCode::NoSuchFile
                     } else if ["denied", "permission", "not allowed", "not permitted"].iter().any(|w| t.contains(w)) {
                         StatusCode::PermissionDenied
@@ -1068,6 +1071,8 @@ mod tests {
         assert_eq!(to_status(&r(553, "Could not create file")).status_code, StatusCode::PermissionDenied);
         assert_eq!(to_status(&r(502, "SITE not understood")).status_code, StatusCode::OpUnsupported);
         assert_eq!(to_status(&r(452, "Disk full")).status_code, StatusCode::Failure);
+        assert_eq!(to_status(&r(550, "Can't remove directory: Not a directory")).status_code, StatusCode::NoSuchFile);
+        assert_eq!(to_status(&r(550, "Directory not empty")).status_code, StatusCode::Failure);
         assert!(too_many(&r(421, "Too many connections from this IP")));
         assert!(too_many(&r(530, "Sorry, the maximum number of clients is reached")));
         assert!(!too_many(&r(530, "Login incorrect")));

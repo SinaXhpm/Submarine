@@ -717,6 +717,10 @@ pub async fn ai_chat_settings(db: tauri::State<'_, crate::DbState>, chat_id: i64
                 return Err("[AI] BAD_EFFORT".into());
             }
         }
+        // A limit of 0 would have every message refused by the provider.
+        if new.settings.max_tokens == Some(0) {
+            return Err("[AI] BAD_MAX_TOKENS: at least 1".into());
+        }
         let provider_name = |id: Option<i64>| id.and_then(|id| s.provider(id).ok()).map(|p| p.view.name);
         let mut changes = Vec::new();
         if new.provider_id != old.provider_id {
