@@ -11,7 +11,12 @@
 //! refused (`ClientHandler::server_channel_open_agent_forward`).
 //!
 //! Which agent: `IdentityAgent` in `~/.ssh/config` when it applies to the host
-//! (see `find_agent_for`), otherwise the first one found (`find_agent`).
+//! (see `find_agent_for`), otherwise the first one found (`find_agent`). That
+//! covers password managers' agents (1Password, Bitwarden): on Windows they
+//! take the OpenSSH agent's pipe, elsewhere they're found at their sockets.
+//!
+//! A server can also be set to log in with the agent's keys (auth type
+//! `agent`): then the agent is used whatever the device's setting says.
 //!
 //! The node's own credentials are tried exactly as before. The agent is used
 //! only (a) where a passphrase or password would otherwise have to be asked
@@ -139,8 +144,9 @@ impl AgentSession {
 
 /// Look for an ssh-agent on this device that holds at least one key: an
 /// `SSH_AUTH_SOCK` naming a named pipe first (gpg4win, KeeAgent and the like —
-/// Windows' own OpenSSH client honours it too), then the Windows OpenSSH agent
-/// service, then Pageant. The first that answers with a key is used.
+/// Windows' own OpenSSH client honours it too), then the Windows OpenSSH agent's
+/// pipe (also where 1Password's and Bitwarden's agents listen), then Pageant.
+/// The first that answers with a key is used.
 #[cfg(windows)]
 async fn find_agent() -> Option<AgentSession> {
     if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
@@ -180,14 +186,42 @@ fn is_pipe_path(path: &str) -> bool {
 }
 
 /// Look for an ssh-agent on this device that holds at least one key: the one
-/// `SSH_AUTH_SOCK` points at.
+/// `SSH_AUTH_SOCK` points at, then the sockets password managers put their
+/// agents at (`password_manager_sockets`). An app started from the Dock or a
+/// desktop menu often has no `SSH_AUTH_SOCK` of the shell's, so 1Password's
+/// agent wouldn't be found through it.
 #[cfg(unix)]
 async fn find_agent() -> Option<AgentSession> {
-    let client = tokio::time::timeout(AGENT_LOOKUP_TIMEOUT, AgentClient::connect_env())
-        .await
-        .ok()?
-        .ok()?;
-    AgentSession::new(client.dynamic(), "the agent at SSH_AUTH_SOCK").await
+    if let Ok(Ok(client)) = tokio::time::timeout(AGENT_LOOKUP_TIMEOUT, AgentClient::connect_env()).await {
+        if let Some(agent) = AgentSession::new(client.dynamic(), "the agent at SSH_AUTH_SOCK").await {
+            return Some(agent);
+        }
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    for (path, source) in password_manager_sockets(&home) {
+        if !path.exists() {
+            continue;
+        }
+        if let Ok(Ok(client)) = tokio::time::timeout(AGENT_LOOKUP_TIMEOUT, AgentClient::connect_uds(&path)).await {
+            if let Some(agent) = AgentSession::new(client.dynamic(), source).await {
+                return Some(agent);
+            }
+        }
+    }
+    None
+}
+
+/// Where password managers' ssh-agents listen by default, under `home`. On
+/// Windows they take the OpenSSH agent's pipe instead (see `find_agent`).
+#[cfg(unix)]
+fn password_manager_sockets(home: &std::path::Path) -> Vec<(std::path::PathBuf, &'static str)> {
+    let mut out = Vec::new();
+    if cfg!(target_os = "macos") {
+        out.push((home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"), "1Password's SSH agent"));
+    }
+    out.push((home.join(".1password/agent.sock"), "1Password's SSH agent"));
+    out.push((home.join(".bitwarden-ssh-agent.sock"), "Bitwarden's SSH agent"));
+    out
 }
 
 #[cfg(not(any(unix, windows)))]

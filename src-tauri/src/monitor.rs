@@ -217,6 +217,10 @@ pub struct NodeAuth {
     pub proxy_type: String,
     pub proxy_host: Option<String>,
     pub proxy_port: Option<u16>,
+    /// The node is set to log in with an ssh-agent's keys: the agent is used
+    /// whatever the device's "Use keys from an ssh-agent" setting says.
+    #[serde(default)]
+    pub via_agent: bool,
 }
 
 /// A user-defined metric. The probe loop wraps each command in BEGIN/END
@@ -871,7 +875,7 @@ enum Login {
     Password(String),
     /// Neither is saved: the keys an ssh-agent on this device holds, without
     /// its security keys (`log_in_with_agent`). Only with the device's "Use
-    /// keys from an ssh-agent" setting on.
+    /// keys from an ssh-agent" setting on, or for a node set to log in that way.
     Agent,
 }
 
@@ -888,7 +892,7 @@ fn classify_auth(auth: &NodeAuth, use_agent: bool) -> Result<Login, String> {
     }
     // A node saved without its password is asked for it at connect time
     // (issue #30), but monitoring has no UI to ask on.
-    if use_agent {
+    if (use_agent || auth.via_agent) && cfg!(desktop) {
         Ok(Login::Agent)
     } else if cfg!(desktop) {
         Err(NO_SAVED_LOGIN.into())
@@ -2041,6 +2045,7 @@ mod login_tests {
             proxy_type: "none".into(),
             proxy_host: None,
             proxy_port: None,
+            via_agent: false,
         }
     }
 
@@ -2067,6 +2072,13 @@ mod login_tests {
             assert_eq!(err, NO_SAVED_LOGIN);
             assert!(err.contains("\"Use keys from an ssh-agent\""), "{err}");
         }
+    }
+
+    #[test]
+    fn a_node_set_to_log_in_with_the_agent_uses_it_with_the_setting_off() {
+        let agent_node = NodeAuth { via_agent: true, ..node(None, None) };
+        assert_eq!(classify_auth(&agent_node, false), Ok(Login::Agent));
+        assert_eq!(classify_auth(&agent_node, true), Ok(Login::Agent));
     }
 
     // What ~/.ssh/config says rules the agent out before any agent is asked.

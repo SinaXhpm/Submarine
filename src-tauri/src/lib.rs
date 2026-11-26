@@ -8442,6 +8442,9 @@ fn normalize_server_identity(
             // No password, no credential link — node owns username + key.
             (username, None, key_id, None)
         }
+        // The keys of an ssh-agent on this device (1Password and the like):
+        // only the username is saved.
+        "agent" => (username, None, None, None),
         // "custom_pass" and any unknown fallback: node owns username + password.
         _ => (username, password, None, None),
     }
@@ -10963,6 +10966,10 @@ fn set_use_ssh_config(enabled: bool) {
 fn set_use_ssh_agent(enabled: bool) {
     monitor::set_use_agent(enabled);
 }
+
+/// Logged when a server set to log in with an ssh-agent's keys finds no agent
+/// that holds one.
+const NO_AGENT_FOR_SERVER: &str = "No ssh-agent with a key was found. For 1Password: turn on Settings → Developer → \"Use the SSH agent\" (on Windows, with the OpenSSH Authentication Agent service stopped) and keep 1Password unlocked. Another agent (Bitwarden, Pageant, ssh-agent) has to be running with the key loaded; IdentityAgent in ~/.ssh/config can name where it is.";
 
 /// Whether an ssh-agent holding at least one key is running on this device.
 /// Looks only once per login.
@@ -13779,8 +13786,8 @@ fn resolve_jump_auth(
     conn: &rusqlite::Connection,
     server_id: i32,
 ) -> Result<
-    // host, port, user, password, (private_key, passphrase, key_name)
-    Option<(String, i32, String, Option<String>, Option<(String, Option<String>, Option<String>)>)>,
+    // host, port, user, password, (private_key, passphrase, key_name), via an ssh-agent
+    Option<(String, i32, String, Option<String>, Option<(String, Option<String>, Option<String>)>, bool)>,
     String,
 > {
     let mut stmt = conn
@@ -13851,7 +13858,8 @@ fn resolve_jump_auth(
         None
     };
 
-    Ok(Some((host, port, username, password, key_data)))
+    let via_agent = cfg!(desktop) && server_auth_type == "agent";
+    Ok(Some((host, port, username, password, key_data, via_agent)))
 }
 
 /// What every hop of one connection shares: the target session's prompt
@@ -13922,6 +13930,9 @@ struct Hop {
     /// The saved server a password typed for it is saved to ("Save password"):
     /// None for a hop from ~/.ssh/config, or one that logs in with a key.
     save_to: Option<SaveTarget>,
+    /// A saved server set to log in with an ssh-agent's keys: the agent is
+    /// used whatever the device's setting says.
+    via_agent: bool,
 }
 
 /// More hops than this in one route is a loop in `~/.ssh/config`.
@@ -14066,7 +14077,7 @@ async fn connect_jump_host(
 ) -> Result<Vec<russh::client::Handle<ssh_manager::ClientHandler>>, String> {
     // Resolve the bastion synchronously and drop the DB guard before any await
     // (rusqlite Connection is not Send).
-    let ((host, port, user, password, key_data), jump_name) = {
+    let ((host, port, user, password, key_data, via_agent), jump_name) = {
         let guard = ctx.db.lock().map_err(|_| "[STATE] LOCK_FAILED".to_string())?;
         let conn = guard
             .as_ref()
@@ -14081,8 +14092,8 @@ async fn connect_jump_host(
     for line in &target.log {
         ctx.log(line, "info");
     }
-    let save_to = if key_data.is_none() { SaveTarget::for_server(ctx.app, jump_server_id) } else { None };
-    let hop = Hop { target, password, key_data, cache_id: format!("jump{jump_server_id}"), save_to };
+    let save_to = if key_data.is_none() && !via_agent { SaveTarget::for_server(ctx.app, jump_server_id) } else { None };
+    let hop = Hop { target, password, key_data, cache_id: format!("jump{jump_server_id}"), save_to, via_agent };
     reach_hop(ctx, hop, route, 0).await
 }
 
@@ -14136,6 +14147,7 @@ fn config_jump_chain<'a>(
                 password: None,
                 key_data: None,
                 save_to: None,
+                via_agent: false,
             };
             if i == 0 {
                 chain = reach_hop(ctx, hop, route, depth + 1).await?;
@@ -14206,7 +14218,7 @@ async fn login_hop(
     proxy_watch: Option<proxy_command::Watch>,
 ) -> Result<russh::client::Handle<ssh_manager::ClientHandler>, String> {
     use tokio::time::Duration;
-    let Hop { mut target, password, key_data, cache_id, save_to } = hop;
+    let Hop { mut target, password, key_data, cache_id, save_to, via_agent } = hop;
     let identity_agent = target.identity_agent();
     let (host, port, user) = (target.host.clone(), target.port, target.user.clone());
     let identities = target.identities(&user);
@@ -14332,7 +14344,7 @@ async fn login_hop(
         attempt: ctx.attempt,
         cancelled: std::sync::atomic::AtomicBool::new(false),
         save_to,
-        agent: AgentSlot::new(ctx.use_agent, identity_agent, identities),
+        agent: AgentSlot::new(ctx.use_agent || via_agent, identity_agent, identities),
         session_unusable: std::sync::atomic::AtomicBool::new(false),
         server_time: std::sync::atomic::AtomicU64::new(0),
     };
@@ -14844,6 +14856,9 @@ async fn initiate_connection(
             return Err("Server not found".into());
         }
     };
+    // A server set to log in with an ssh-agent's keys uses the agent whatever
+    // the device's "Use keys from an ssh-agent" setting says.
+    let via_agent = cfg!(desktop) && server_auth_type == "agent";
 
     // What ~/.ssh/config says about this host: an alias's address and port, a
     // User for a node saved without one, the agent (and, for later steps, the
@@ -15308,9 +15323,11 @@ async fn initiate_connection(
                     allow_prompt: allow_kbi,
                     attempt: &attempt,
                     cancelled: std::sync::atomic::AtomicBool::new(false),
-                    // Not for a quick connect (no saved server) or a key login.
-                    save_to: if server_id > 0 && key_data.is_none() { SaveTarget::for_server(&app, server_id) } else { None },
-                    agent: AgentSlot::new(use_agent, identity_agent.clone(), identities.clone()),
+                    // Not for a quick connect (no saved server), a key login,
+                    // or one through an ssh-agent (a saved password would
+                    // replace the agent).
+                    save_to: if server_id > 0 && key_data.is_none() && !via_agent { SaveTarget::for_server(&app, server_id) } else { None },
+                    agent: AgentSlot::new(use_agent || via_agent, identity_agent.clone(), identities.clone()),
                     session_unusable: std::sync::atomic::AtomicBool::new(false),
                     server_time: std::sync::atomic::AtomicU64::new(0),
                 };
@@ -15360,7 +15377,14 @@ async fn initiate_connection(
                         .await
                         .unwrap_or(Err(russh::Error::ConnectionTimeout))
                 } else {
-                    emit_log("Attempting Password Authentication...", "info");
+                    if via_agent {
+                        emit_log("This server logs in with the keys of an ssh-agent on this device.", "info");
+                        if !device_keys_available(&prompt_ctx).await {
+                            emit_log(NO_AGENT_FOR_SERVER, "error");
+                        }
+                    } else {
+                        emit_log("Attempting Password Authentication...", "info");
+                    }
                     // The failed-screen override (if any) is tried first, then
                     // the cache, then the saved password; with none of them the
                     // user is asked — unless the server doesn't take passwords,
@@ -16217,6 +16241,7 @@ fn store_prompted_password(conn: &rusqlite::Connection, server_id: i32, password
         .map_err(|_| "The server is no longer in this profile.".to_string())?;
     match (auth_type.as_deref().unwrap_or("vault"), credential_id) {
         ("custom_key", _) => Err("This server logs in with a key; its password isn't saved.".into()),
+        ("agent", _) => Err("This server logs in with the keys of an ssh-agent; its password isn't saved.".into()),
         ("vault", Some(_)) if login_type.as_deref() == Some("key") => {
             Err("This server's saved login uses a key; its password isn't saved.".into())
         }
@@ -16255,7 +16280,8 @@ mod prompted_password_tests {
              INSERT INTO servers VALUES (3, 'key', 'root', NULL, NULL, 4, 'custom_key');
              INSERT INTO servers VALUES (4, 'nothing saved', 'root', NULL, NULL, NULL, NULL);
              INSERT INTO servers VALUES (5, 'via key login', NULL, NULL, 8, NULL, 'vault');
-             INSERT INTO servers VALUES (6, 'login deleted', NULL, NULL, 9, NULL, 'vault');",
+             INSERT INTO servers VALUES (6, 'login deleted', NULL, NULL, 9, NULL, 'vault');
+             INSERT INTO servers VALUES (7, 'via agent', 'root', NULL, NULL, NULL, 'agent');",
         )
         .unwrap();
         conn
@@ -16299,6 +16325,9 @@ mod prompted_password_tests {
         let login: Option<String> = conn.query_row("SELECT password FROM credentials WHERE id = 8", [], |r| r.get(0)).unwrap();
         assert_eq!(login, None);
         assert_eq!(server_pw(&conn, 5), (None, Some("vault".into())));
+        // One that logs in through an ssh-agent stays that way.
+        assert!(store_prompted_password(&conn, 7, "pw").unwrap_err().contains("ssh-agent"));
+        assert_eq!(server_pw(&conn, 7), (None, Some("agent".into())));
         assert!(store_prompted_password(&conn, 99, "pw").is_err());
     }
 }
@@ -26556,6 +26585,7 @@ fn resolve_node_auth_for_monitor(
         proxy_type,
         proxy_host: proxy_host.filter(|s| !s.is_empty()),
         proxy_port: proxy_port.map(|p| p as u16),
+        via_agent: auth_type == "agent",
     })
 }
 

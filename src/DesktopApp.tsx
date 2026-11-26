@@ -3678,7 +3678,7 @@ function DesktopApp() {
             // send nulls so the DB row matches reality. The backend's
             // `normalize_server_identity` enforces this again on the server
             // side as a belt-and-suspenders guarantee.
-            const isInline = newNode.authType === "custom_pass" || newNode.authType === "custom_key";
+            const isInline = newNode.authType === "custom_pass" || newNode.authType === "custom_key" || newNode.authType === "agent";
             // An RDP (issue #3), telnet (#179) or VNC server has a host,
             // port, login (its own or a saved one) and maybe an SSH server to
             // go through; nothing that runs over SSH (forwards, mirrors,
