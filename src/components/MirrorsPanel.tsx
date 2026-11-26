@@ -70,7 +70,8 @@ interface MirrorStatus {
   transfer_total: number;
   transfer_done: number;
   failed: number;      // copies and deletes that failed (the log says why)
-  once: boolean;       // the first sync alone, ending as "done"
+  case_skipped: number; // names left alone: another differs only in letter case (the log names them)
+  once: boolean;      // the first sync alone, ending as "done"
   last_event_ms: number;
   error?: string;
 }
@@ -87,7 +88,11 @@ interface MirrorLogEntry {
 interface DryRunReport {
   entries: { path: string; size: number; action: string }[];
   total_bytes: number;
+  case_clashes: string[]; // names left alone, as in MirrorStatus.case_skipped
 }
+
+// Why a mirror leaves names that differ only in letter case alone.
+const CASE_NOTE = tk("The folder on this device can't hold two names that differ only in letter case, like A.txt and a.txt, so the mirror leaves them alone. Rename one of each pair to mirror it.");
 
 interface MirrorsPanelProps {
   sessionId: string;
@@ -139,6 +144,9 @@ function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
         <span>↓ {live.downloaded}</span>
         <span>✗ {live.deleted}</span>
         {live.failed > 0 && <span className="text-rose-400">{t("failed {count}", { count: live.failed })}</span>}
+        {live.case_skipped > 0 && (
+          <span className="text-amber-300" title={t(CASE_NOTE)}>{t("{count} left alone: names differ only in case", { count: live.case_skipped })}</span>
+        )}
         {live.queue_depth > 0 && <span className="text-amber-300">{t("queue {count}", { count: live.queue_depth })}</span>}
         {live.error && <span className="text-rose-400 truncate" title={live.error}>· {live.error}</span>}
       </div>
@@ -570,6 +578,24 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                     {tx("Initial sync is one decision per file based on this scan. If you edit a file locally {before}, the change may be silently overwritten by the remote copy. Best to pause edits until the live watcher kicks in.", { before: <b>{t("before the transfer phase finishes")}</b> })}
                   </>
                 )}
+              </div>
+            </div>
+          )}
+
+          {pending.report.case_clashes.length > 0 && (
+            <div className="flex items-start gap-2 text-[10.5px] px-2.5 py-1.5 rounded border bg-amber-500/10 border-amber-500/30 text-amber-200">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              <div className="min-w-0 leading-relaxed">
+                <span className="font-semibold mr-1">{t("Heads up")}</span>
+                {t(CASE_NOTE)}
+                <div className="font-mono mt-1 max-h-20 overflow-auto custom-scrollbar">
+                  {pending.report.case_clashes.slice(0, 20).map((name) => (
+                    <div key={name} className="truncate">{name}</div>
+                  ))}
+                  {pending.report.case_clashes.length > 20 && (
+                    <div className="italic">{t("… {count} more", { count: pending.report.case_clashes.length - 20 })}</div>
+                  )}
+                </div>
               </div>
             </div>
           )}

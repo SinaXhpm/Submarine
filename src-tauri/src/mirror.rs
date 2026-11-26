@@ -48,7 +48,7 @@
 //! nuke the remote copy. The user can flip `soft_delete = false` per
 //! mirror if they actually want hard deletes.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -147,6 +147,9 @@ pub struct MirrorStatus {
     pub transfer_done: u32,
     /// Copies and deletes that failed (the log says why).
     pub failed: u32,
+    /// Names the first sync left alone: another one differs from each only
+    /// in letter case (see CaseClashes; the log names them).
+    pub case_skipped: u32,
     /// A run that ends after the first sync ("done"), with no watcher.
     pub once: bool,
     /// Wall-clock time (ms since epoch) of the most recent successful action.
@@ -166,6 +169,8 @@ pub struct DryRunEntry {
 pub struct DryRunReport {
     pub entries: Vec<DryRunEntry>,
     pub total_bytes: u64,
+    /// Names left alone, as in `MirrorStatus::case_skipped`.
+    pub case_clashes: Vec<String>,
 }
 
 pub struct ActiveMirror {
@@ -879,12 +884,13 @@ pub async fn dry_run(
     let mut tree = RemoteTree { coarse_times: files.coarse_times(), ..RemoteTree::default() };
     walk_remote(&sftp, &spec.remote, &spec.remote, &filter,
                 &mut tree, &mut scanned, &mut HashSet::new(), Tidy::default()).await?;
+    tree.case = CaseClashes::of_server(direction.writes_here() && folds_case(&local_root), &tree.found);
     walk_local(&local_root, &local_root, &spec.remote, &filter, &sftp,
-               direction.conflict_mode(&spec), &tree,
+               direction.conflict_mode(&spec), &mut tree,
                &mut entries, &mut total_bytes, &mut seen, &mut scanned, &mut Vec::new(), Tidy::default()).await?;
     remote_only(&tree, &filter, &seen, &mut entries, &mut total_bytes);
     one_way(direction, &mut entries, &mut total_bytes);
-    Ok(DryRunReport { entries, total_bytes })
+    Ok(DryRunReport { entries, total_bytes, case_clashes: tree.case.shown() })
 }
 
 /// Leaves the moves of a scan that go the mirror's way, and their size.
@@ -1438,7 +1444,7 @@ async fn walk_local(
     filter: &Filter,
     sftp: &SftpSession,
     conflict_mode: &str,
-    tree: &RemoteTree,
+    tree: &mut RemoteTree,
     out: &mut Vec<DryRunEntry>,
     total: &mut u64,
     seen: &mut HashSet<String>,
@@ -1457,6 +1463,9 @@ async fn walk_local(
                 let _ = tokio::fs::remove_file(&path).await;
                 continue;
             }
+            // Before the filter: a file it leaves out here would still take
+            // a download of the server's name in another case.
+            if tree.case.meets_local(&rel) { continue; }
             // What a skip names as a file it names as a folder too, so this
             // goes before the look at what it is.
             if filter.skips(&rel, false) { continue; }
@@ -1543,6 +1552,139 @@ struct RemoteTree {
     /// What may be there though the walk didn't look: a folder that wouldn't
     /// list (the root as ""), and the trash, which it leaves out.
     unread: HashSet<String>,
+    /// Names that would land on one file here.
+    case: CaseClashes,
+}
+
+/// Names that differ only in letter case, for a local folder that takes them
+/// for one name (as Windows and macOS do): the server's `A.txt` and `a.txt`
+/// would be copied onto one file here, and the next scan would find that file
+/// changed and copy it over the server's `A.txt`. A local `readme.md` and the
+/// server's `README.md` meet the same way. So where the mirror writes here,
+/// such names are left alone, with all that is below them, and the mirror
+/// says which.
+#[derive(Default)]
+struct CaseClashes {
+    /// The mirror writes here, into a folder that doesn't tell case apart.
+    on: bool,
+    /// The server's paths by their folded form, as walk_remote found them.
+    remote: HashMap<String, String>,
+    /// The folded paths where names clash.
+    at: HashSet<String>,
+    /// Those names, as each side spells them.
+    names: BTreeSet<String>,
+}
+
+/// A path as a folder that doesn't tell case apart reads it.
+fn fold_case(rel: &str) -> String {
+    rel.to_lowercase()
+}
+
+impl CaseClashes {
+    /// The clashes among the server's names, when `on`.
+    fn of_server(on: bool, found: &BTreeMap<String, FileAttributes>) -> CaseClashes {
+        let mut clashes = CaseClashes { on, ..CaseClashes::default() };
+        if !on {
+            return clashes;
+        }
+        for rel in found.keys() {
+            let key = fold_case(rel);
+            match clashes.remote.get(&key) {
+                Some(other) if other != rel => {
+                    let other = other.clone();
+                    clashes.add(key, [other, rel.clone()]);
+                }
+                Some(_) => {}
+                None => {
+                    clashes.remote.insert(key, rel.clone());
+                }
+            }
+        }
+        clashes
+    }
+
+    fn add(&mut self, key: String, names: [String; 2]) {
+        self.at.insert(key);
+        self.names.extend(names);
+    }
+
+    /// Whether `rel`, as either side spells it, is at or below a clash.
+    fn hits(&self, rel: &str) -> bool {
+        if self.at.is_empty() {
+            return false;
+        }
+        let key = fold_case(rel);
+        let hit = key.match_indices('/').map(|(i, _)| &key[..i]).chain([key.as_str()]).any(|k| self.at.contains(k));
+        hit
+    }
+
+    /// Whether a local entry is left alone: it is at or below a clash, or the
+    /// server spells its name in another case (then the server's is left too).
+    fn meets_local(&mut self, rel: &str) -> bool {
+        if !self.on {
+            return false;
+        }
+        if self.hits(rel) {
+            return true;
+        }
+        let key = fold_case(rel);
+        match self.remote.get(&key) {
+            Some(theirs) if theirs != rel => {
+                let theirs = theirs.clone();
+                self.add(key, [theirs, rel.to_string()]);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The clashing names to tell about: what is below one goes with it.
+    fn shown(&self) -> Vec<String> {
+        self.names
+            .iter()
+            .filter(|name| {
+                let key = fold_case(name);
+                !key.match_indices('/').any(|(i, _)| self.at.contains(&key[..i]))
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// Whether a local folder takes names that differ only in letter case for one
+/// name: Windows and macOS as they come, a phone's shared storage, a FAT
+/// drive. Asked by the folder's own name with its letters in the other case;
+/// a name with no letters to turn leaves it to the system's usual answer.
+fn folds_case(root: &Path) -> bool {
+    let usual = cfg!(any(windows, target_os = "macos", target_os = "ios", target_os = "android"));
+    let (Some(parent), Some(name)) = (root.parent(), root.file_name().and_then(|n| n.to_str())) else {
+        return usual;
+    };
+    let turned: String = name
+        .chars()
+        .map(|c| if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() })
+        .collect();
+    if turned == name {
+        return usual;
+    }
+    match (std::fs::metadata(root), std::fs::metadata(parent.join(&turned))) {
+        (Ok(this), Ok(that)) => same_entry(&this, &that),
+        (Ok(_), Err(_)) => false,
+        _ => usual,
+    }
+}
+
+#[cfg(unix)]
+fn same_entry(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (a.dev(), a.ino()) == (b.dev(), b.ino())
+}
+
+/// Two folders whose names differ only in case, side by side, need a folder
+/// with case told apart switched on: too rare on Windows to ask about.
+#[cfg(not(unix))]
+fn same_entry(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    true
 }
 
 impl RemoteTree {
@@ -1651,10 +1793,10 @@ async fn walk_remote(
 
 /// The files only the server has: walk_local already decided the fate of the
 /// others (`seen`), and what is left becomes a download-new entry, if the
-/// filter takes it.
+/// filter takes it and no other name differs from it only in case.
 fn remote_only(tree: &RemoteTree, filter: &Filter, seen: &HashSet<String>, out: &mut Vec<DryRunEntry>, total: &mut u64) {
     for (rel, attr) in &tree.found {
-        if attr.file_type().is_dir() || seen.contains(rel) || !filter.keeps(rel, false) { continue; }
+        if attr.file_type().is_dir() || seen.contains(rel) || !filter.keeps(rel, false) || tree.case.hits(rel) { continue; }
         let size = attr.size.unwrap_or(0);
         out.push(DryRunEntry { path: rel.clone(), size, action: "download-new".into() });
         *total = total.saturating_add(size);
@@ -1704,6 +1846,7 @@ pub async fn start(
         transfer_total: 0,
         transfer_done: 0,
         failed: 0,
+        case_skipped: 0,
         once,
         last_event_ms: now_ms(),
         error: None,
@@ -1875,14 +2018,15 @@ async fn run_mirror(
     let mut scanned = 0u32;
     let mut local_dirs = Vec::new();
     let mut remote_dirs = HashSet::new();
+    let mut tree = RemoteTree { coarse_times, ..RemoteTree::default() };
     // A big tree over a slow link takes hours, and Stop, Disconnect and Lock
     // all wait for this worker.
     let scan = async {
-        let mut tree = RemoteTree { coarse_times, ..RemoteTree::default() };
         walk_remote(&*sftp, &spec.remote, &spec.remote, &filter,
                     &mut tree, &mut scanned, &mut remote_dirs, direction.tidy()).await?;
+        tree.case = CaseClashes::of_server(direction.writes_here() && folds_case(&local_root), &tree.found);
         walk_local(&local_root, &local_root, &spec.remote, &filter,
-                   &*sftp, direction.conflict_mode(&spec), &tree,
+                   &*sftp, direction.conflict_mode(&spec), &mut tree,
                    &mut work, &mut total, &mut seen, &mut scanned, &mut local_dirs, direction.tidy()).await?;
         remote_only(&tree, &filter, &seen, &mut work, &mut total);
         one_way(direction, &mut work, &mut total);
@@ -1892,6 +2036,20 @@ async fn run_mirror(
         Some(scanned_all) => scanned_all?,
         None => return Ok(()),
     }
+    // Names that would land on one file here are left alone, and told: the
+    // log names some, the card counts all.
+    let clashes = tree.case.shown();
+    const CLASHES_LOGGED: usize = 50;
+    for name in clashes.iter().take(CLASHES_LOGGED) {
+        emit_log(&app, &session_id, &mirror_id, "warn", "case-clash", Some(name.clone()),
+                 Some("Another name here or on the server differs from this one only in letter case, \
+                       and this folder takes them for one. Left alone: rename one of them to mirror it.".into()));
+    }
+    if clashes.len() > CLASHES_LOGGED {
+        emit_log(&app, &session_id, &mirror_id, "warn", "case-clash", None,
+                 Some(format!("{} more names like these are left alone", clashes.len() - CLASHES_LOGGED)));
+    }
+    remote_dirs.retain(|rel| !tree.case.hits(rel));
     // Folders, empty ones too, end up on both sides: one with files would
     // come with its first file anyway, an empty one only this way (the
     // watcher does the same for a folder made while it runs).
@@ -1912,6 +2070,7 @@ async fn run_mirror(
     {
         let mut s = status.lock().await;
         s.scanned = scanned;
+        s.case_skipped = clashes.len() as u32;
         s.transfer_total = work.len() as u32;
         s.transfer_done = 0;
     }
@@ -2899,7 +3058,7 @@ mod tests {
         std::fs::write(root.join("node_modules/x/skip.txt"), b"3").unwrap();
         let lab = Lab::new(&[("/srv", Dir)], &[], &[]).await;
         let (mut out, mut total, mut seen, mut scanned, mut dirs) = (Vec::new(), 0, HashSet::new(), 0, Vec::new());
-        walk_local(&root, &root, "/srv", &Filter::default(), &lab.sftp, "local", &RemoteTree::default(), &mut out, &mut total, &mut seen, &mut scanned, &mut dirs, Tidy::default())
+        walk_local(&root, &root, "/srv", &Filter::default(), &lab.sftp, "local", &mut RemoteTree::default(), &mut out, &mut total, &mut seen, &mut scanned, &mut dirs, Tidy::default())
             .await
             .unwrap();
         std::fs::remove_dir_all(&root).unwrap();
@@ -2944,7 +3103,7 @@ mod tests {
         walk_remote(&lab.sftp, remote, remote, &filter, &mut tree, &mut scanned, &mut HashSet::new(), tidy)
             .await
             .unwrap();
-        walk_local(root, root, remote, &filter, &lab.sftp, direction.conflict_mode(spec), &tree, &mut out, &mut total, &mut seen, &mut scanned, &mut Vec::new(), tidy)
+        walk_local(root, root, remote, &filter, &lab.sftp, direction.conflict_mode(spec), &mut tree, &mut out, &mut total, &mut seen, &mut scanned, &mut Vec::new(), tidy)
             .await
             .unwrap();
         remote_only(&tree, &filter, &seen, &mut out, &mut total);
@@ -3171,6 +3330,7 @@ mod tests {
             transfer_total: 0,
             transfer_done: 0,
             failed: 0,
+            case_skipped: 0,
             once: false,
             last_event_ms: 0,
             error: None,
@@ -3522,5 +3682,87 @@ mod tests {
         // Not knowing what it is: taken as a file, and not skipped as a folder.
         assert!(may_delete(&sql, "x.sql", None));
         assert!(!may_delete(&sql, "tmp2.sql", None));
+    }
+
+    /// What a scan both ways would move, with names compared without letter
+    /// case (`on`) as on Windows or macOS, and the names it left alone.
+    async fn scan_case(lab: &Lab, root: &Path, on: bool) -> (Vec<(String, String)>, Vec<String>) {
+        let filter = Filter::default();
+        let (mut out, mut total, mut seen, mut scanned, mut tree) = (Vec::new(), 0, HashSet::new(), 0, RemoteTree::default());
+        walk_remote(&lab.sftp, "/srv", "/srv", &filter, &mut tree, &mut scanned, &mut HashSet::new(), Tidy::default())
+            .await
+            .unwrap();
+        tree.case = CaseClashes::of_server(on, &tree.found);
+        walk_local(root, root, "/srv", &filter, &lab.sftp, "local", &mut tree, &mut out, &mut total, &mut seen, &mut scanned, &mut Vec::new(), Tidy::default())
+            .await
+            .unwrap();
+        remote_only(&tree, &filter, &seen, &mut out, &mut total);
+        let mut found: Vec<(String, String)> = out.into_iter().map(|e| (e.path, e.action)).collect();
+        found.sort();
+        (found, tree.case.shown())
+    }
+
+    // The server's A.txt and a.txt were copied onto one file here, and the
+    // next scan copied that file over the server's A.txt.
+    #[tokio::test]
+    async fn names_that_differ_only_in_case_are_left_alone_where_case_is_one() {
+        let lab = Lab::new(
+            &[
+                ("/srv", Dir),
+                ("/srv/A.txt", File),
+                ("/srv/a.txt", File),
+                ("/srv/Docs", Dir),
+                ("/srv/Docs/x.txt", File),
+                ("/srv/docs", Dir),
+                ("/srv/docs/x.txt", File),
+                ("/srv/docs/y.txt", File),
+                ("/srv/README.md", File),
+                ("/srv/same.txt", File),
+                ("/srv/new.txt", File),
+            ],
+            &[],
+            &[],
+        )
+        .await;
+        let root = scan_root("case");
+        // Here in another case than on the server.
+        std::fs::write(root.join("readme.md"), b"mine").unwrap();
+        as_on_the_server(&root, "same.txt");
+        std::fs::write(root.join("mine.txt"), b"1").unwrap();
+        let (found, shown) = scan_case(&lab, &root, true).await;
+        assert_eq!(found, [moved("mine.txt", "upload-new"), moved("new.txt", "download-new")]);
+        // What is below a clashing folder goes with it, unnamed.
+        assert_eq!(shown, ["A.txt", "Docs", "README.md", "a.txt", "docs", "readme.md"]);
+        // Where case is told apart, each name is a file of its own.
+        let (found, shown) = scan_case(&lab, &root, false).await;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            found,
+            [
+                moved("A.txt", "download-new"),
+                moved("Docs/x.txt", "download-new"),
+                moved("README.md", "download-new"),
+                moved("a.txt", "download-new"),
+                moved("docs/x.txt", "download-new"),
+                moved("docs/y.txt", "download-new"),
+                moved("mine.txt", "upload-new"),
+                moved("new.txt", "download-new"),
+                moved("readme.md", "upload-new"),
+            ]
+        );
+        assert!(shown.is_empty());
+    }
+
+    #[test]
+    fn a_folder_says_whether_it_tells_case_apart() {
+        let root = scan_root("Case");
+        let folds = folds_case(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        // Windows and macOS as they come; Linux tells case apart.
+        if cfg!(any(windows, target_os = "macos")) {
+            assert!(folds);
+        } else if cfg!(target_os = "linux") {
+            assert!(!folds);
+        }
     }
 }
