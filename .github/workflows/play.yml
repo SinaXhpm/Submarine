@@ -1,16 +1,17 @@
 name: Google Play
 
-# Builds the Android App Bundle for Google Play, signs it with the upload key,
+# Builds the Android App Bundle for Google Play, signs it with the release key,
 # and sends it to a Play testing track. By hand only, from the Actions tab.
 #
 # Three jobs, each holding only what it needs (as release.yml's Android jobs):
 #   bundle  builds the AAB with the app's whole toolchain and no secret;
-#   sign    signs it with the upload key, running nothing but jarsigner;
+#   sign    signs it with the release key, running nothing but jarsigner;
 #   upload  sends it with the Play service account, running one script that
 #           uses only Node's own modules (scripts/play-upload.mjs).
 # Google re-signs what it delivers with the app signing key (Play App
 # Signing), the same key as the APKs on GitHub, so the two can update each
-# other.
+# other. Play registered that key as the upload key too, so the bundle is
+# signed with it (no separate upload key).
 #
 # The Play build has no GitHub update check (the `app-store` feature, as for
 # the Mac App Store): Google Play's rules allow updates only through Play.
@@ -183,11 +184,11 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
-  # Signs the bundle with the upload key, and nothing else: none of the app's
-  # build scripts, crates or plugins run here. The key is base64 in
-  # PLAY_UPLOAD_KEYSTORE_B64, with PLAY_UPLOAD_KEYSTORE_PASSWORD,
-  # PLAY_UPLOAD_KEY_ALIAS and PLAY_UPLOAD_KEY_PASSWORD. An App Bundle is signed
-  # with jarsigner (apksigner signs APKs only).
+  # Signs the bundle with the release key, and nothing else: none of the app's
+  # build scripts, crates or plugins run here. The key is the one release.yml
+  # signs the APKs with: base64 in SUBMARINE_KEYSTORE_B64, with
+  # SUBMARINE_KEYSTORE_PASSWORD, SUBMARINE_KEY_ALIAS and SUBMARINE_KEY_PASSWORD.
+  # An App Bundle is signed with jarsigner (apksigner signs APKs only).
   sign:
     needs: bundle
     runs-on: ubuntu-22.04
@@ -201,42 +202,42 @@ jobs:
       - name: Sign and verify
         shell: bash
         env:
-          PLAY_UPLOAD_KEYSTORE_B64: ${{ secrets.PLAY_UPLOAD_KEYSTORE_B64 }}
-          PLAY_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEYSTORE_PASSWORD }}
-          PLAY_UPLOAD_KEY_ALIAS: ${{ secrets.PLAY_UPLOAD_KEY_ALIAS }}
-          PLAY_UPLOAD_KEY_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEY_PASSWORD }}
+          SUBMARINE_KEYSTORE_B64: ${{ secrets.SUBMARINE_KEYSTORE_B64 }}
+          SUBMARINE_KEYSTORE_PASSWORD: ${{ secrets.SUBMARINE_KEYSTORE_PASSWORD }}
+          SUBMARINE_KEY_ALIAS: ${{ secrets.SUBMARINE_KEY_ALIAS }}
+          SUBMARINE_KEY_PASSWORD: ${{ secrets.SUBMARINE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           missing=()
-          [ -z "$PLAY_UPLOAD_KEYSTORE_B64" ]      && missing+=("PLAY_UPLOAD_KEYSTORE_B64")
-          [ -z "$PLAY_UPLOAD_KEYSTORE_PASSWORD" ] && missing+=("PLAY_UPLOAD_KEYSTORE_PASSWORD")
-          [ -z "$PLAY_UPLOAD_KEY_ALIAS" ]         && missing+=("PLAY_UPLOAD_KEY_ALIAS")
-          [ -z "$PLAY_UPLOAD_KEY_PASSWORD" ]      && missing+=("PLAY_UPLOAD_KEY_PASSWORD")
+          [ -z "$SUBMARINE_KEYSTORE_B64" ]      && missing+=("SUBMARINE_KEYSTORE_B64")
+          [ -z "$SUBMARINE_KEYSTORE_PASSWORD" ] && missing+=("SUBMARINE_KEYSTORE_PASSWORD")
+          [ -z "$SUBMARINE_KEY_ALIAS" ]         && missing+=("SUBMARINE_KEY_ALIAS")
+          [ -z "$SUBMARINE_KEY_PASSWORD" ]      && missing+=("SUBMARINE_KEY_PASSWORD")
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Missing GitHub Secrets for the upload key: ${missing[*]}"
+            echo "::error::Missing GitHub Secrets for the release key: ${missing[*]}"
             exit 1
           fi
           jarsigner="${JAVA_HOME:?}/bin/jarsigner"
           keytool="${JAVA_HOME:?}/bin/keytool"
           umask 077
-          ks="$RUNNER_TEMP/upload.jks"
+          ks="$RUNNER_TEMP/release.jks"
           trap 'rm -f "$ks"' EXIT
-          echo "$PLAY_UPLOAD_KEYSTORE_B64" | base64 -d > "$ks"
+          echo "$SUBMARINE_KEYSTORE_B64" | base64 -d > "$ks"
           if [ ! -s "$ks" ]; then
-            echo "::error::PLAY_UPLOAD_KEYSTORE_B64 decoded to an empty file."
+            echo "::error::SUBMARINE_KEYSTORE_B64 decoded to an empty file."
             exit 1
           fi
           mkdir -p artifacts
           in="$(ls unsigned/*-play-unsigned.aab)"
           out="artifacts/$(basename "${in%-unsigned.aab}").aab"
           "$jarsigner" -keystore "$ks" \
-            -storepass:env PLAY_UPLOAD_KEYSTORE_PASSWORD -keypass:env PLAY_UPLOAD_KEY_PASSWORD \
+            -storepass:env SUBMARINE_KEYSTORE_PASSWORD -keypass:env SUBMARINE_KEY_PASSWORD \
             -sigalg SHA256withRSA -digestalg SHA-256 \
-            -signedjar "$out" "$in" "$PLAY_UPLOAD_KEY_ALIAS"
+            -signedjar "$out" "$in" "$SUBMARINE_KEY_ALIAS"
           "$jarsigner" -verify "$out" | tee "$RUNNER_TEMP/verify.txt"
           grep -q "jar verified" "$RUNNER_TEMP/verify.txt"
-          # The upload certificate's fingerprint (public): Play Console shows
-          # the one it expects under App integrity.
+          # The certificate's fingerprint (public): Play Console shows the one
+          # it expects under App integrity (E9:E3:50:DC ... AE:66:9F:1C).
           "$keytool" -printcert -jarfile "$out" | grep -E "SHA256:|Owner:" | sed 's/Owner:.*/Owner: (shown in Play Console)/'
           ls -la artifacts/
 
