@@ -46,7 +46,11 @@ android {
     namespace = "com.submarine.app"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "com.submarine.app"
+        // Google Play knows the app as com.sinaxhpm.submarine (the App Store ID);
+        // the GitHub APK stays com.submarine.app. The Play build sets this through
+        // ORG_GRADLE_PROJECT_submarineApplicationId (play.yml). The Kotlin
+        // namespace above stays the same either way.
+        applicationId = (project.findProperty("submarineApplicationId") as String?) ?: "com.submarine.app"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

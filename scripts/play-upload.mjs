@@ -3,8 +3,8 @@
 // Play Developer API, signed in as a service account. Only Node's own modules:
 // no third-party code sees the account's key.
 //
-//   node scripts/play-upload.mjs --package com.submarine.app --check
-//   node scripts/play-upload.mjs --package com.submarine.app --aab app.aab \
+//   node scripts/play-upload.mjs --package com.sinaxhpm.submarine --check
+//   node scripts/play-upload.mjs --package com.sinaxhpm.submarine --aab app.aab \
 //     --track internal|alpha|beta [--status completed|draft] \
 //     [--name "0.5.0-beta.3"] [--notes notes.txt] [--not-for-review]
 //
