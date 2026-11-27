@@ -253,10 +253,11 @@ ironrdp-rdpdr-native = { path = "vendor/ironrdp-rdpdr-native" }
 
 # The clipboard as a list of files on macOS (file_clipboard.rs), through
 # AppKit's pasteboard: the bindings Tauri already builds on (same versions,
-# nothing new to download), with only the parts used here.
+# nothing new to download), with only the parts used here. NSData and NSError:
+# the Mac App Store build's folder bookmarks (folder_access.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSString", "NSURL"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
 
 # The room left on a disk, before the server's copied files come over

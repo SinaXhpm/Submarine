@@ -17,6 +17,9 @@
 	<true/>
 	<key>com.apple.security.files.downloads.read-write</key>
 	<true/>
+	<!-- Keeps a picked folder usable after a restart (folder_access.rs). -->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
 	<key>com.apple.application-identifier</key>
 	<string>3KBG9ZP99C.com.sinaxhpm.submarine</string>
 	<key>com.apple.developer.team-identifier</key>
