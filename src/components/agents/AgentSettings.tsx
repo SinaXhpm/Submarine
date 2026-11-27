@@ -40,7 +40,7 @@ export const AgentSettings = ({ onOpenPanel }: { onOpenPanel?: () => void }) => 
   };
 
   if (!ov) return error ? <section className="text-[12px] text-red-300">{error}</section> : null;
-  const cmds = setupCommands(ov.program);
+  const cmds = setupCommands(ov.program, ov.flatpak);
 
   return (
     <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
