@@ -146,8 +146,8 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
   // Live updates: every status transition (starting → listening, new
   // connection counted, error, closed) fires a per-session event.
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<TunnelStatus>(`tunnel-update-${sessionId}`, (event) => {
+    // Unlistened through the promise: the panel can close before it settles.
+    const sub = listen<TunnelStatus>(`tunnel-update-${sessionId}`, (event) => {
       const t = event.payload;
       if (!t || !t.id) return;
       setTunnels((prev) => {
@@ -169,8 +169,8 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
       // A forward with no rule here: the rules changed somewhere else (the
       // node was edited, say), so fetch them again.
       if (t.spec && !rulesRef.current.some((r) => sameForward(r, t.spec!))) reloadRules();
-    }).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
+    });
+    return () => { sub.then((fn) => fn()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, nodeId]);
 
@@ -178,8 +178,8 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
   // connections. Kept in a rolling buffer so the panel scrolls back through
   // recent activity without unbounded memory growth.
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<TunnelLogEntry>(`tunnel-log-${sessionId}`, (event) => {
+    // Unlistened through the promise: the panel can close before it settles.
+    const sub = listen<TunnelLogEntry>(`tunnel-log-${sessionId}`, (event) => {
       const entry = event.payload;
       if (!entry || !entry.tunnel_id) return;
       setLogs((prev) => {
@@ -187,8 +187,8 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
         next.push(entry);
         return next;
       });
-    }).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
+    });
+    return () => { sub.then((fn) => fn()); };
   }, [sessionId]);
 
   // Auto-scroll to bottom when new logs come in — but only if the user

@@ -172,6 +172,11 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
 
   const showList = !compact || open === null;
   const showChat = !compact || open !== null;
+  // The list's notes. A narrow page hides the list while a chat is open, so
+  // there they show in the chat, under its bar: Back held while the chat
+  // answers, or "Open the server" turned down, says why.
+  const heldNote = held && <div className="shrink-0 m-2 text-[11.5px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">The open chat is answering. Wait for it, or stop it, to open another.</div>;
+  const errorNote = error && <div className="shrink-0 m-2 text-[11.5px] text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">{error}</div>;
 
   return (
     <div className="relative flex-1 flex min-h-0 min-w-0">
@@ -239,8 +244,8 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
             )}
           </div>
           {notice && <div className="m-2 text-[11.5px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">{notice}</div>}
-          {held && <div className="m-2 text-[11.5px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">The open chat is answering. Wait for it, or stop it, to open another.</div>}
-          {error && <div className="m-2 text-[11.5px] text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">{error}</div>}
+          {heldNote}
+          {errorNote}
           <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
             {chats.length === 0 && <p className="text-[12px] text-zinc-500 text-center mt-6">No chats yet.</p>}
             {chats.map((c) => (
@@ -285,6 +290,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
             onOpenServer={openServer}
             onBusy={setPageBusy}
             elsewhere={!pageBusy && chats.find((c) => c.id === open)?.state === "running"}
+            banner={showList ? undefined : <>{heldNote}{errorNote}</>}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-[13px] text-zinc-500">Pick a chat, or start a new one.</div>

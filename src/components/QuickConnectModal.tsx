@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Zap, X, AlertTriangle, KeyRound, Lock, ShieldAlert } from "lucide-react";
 import PasswordField from "./PasswordField";
 import { useT } from "../i18n";
+import { useBackdropClose } from "../ui/backdrop";
 import { USUAL_PORTS, isFtp, parseServerLink, type FtpProtocol, type ServerProtocol } from "../util/serverProtocol";
 
 // Quick Connect: the auth bundle lives in component state, gets passed to
@@ -47,6 +48,17 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
   const [passphrase, setPassphrase] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
+  const reset = () => {
+    setProtocolState("ssh"); setPortTyped(false); setUserTyped(false);
+    setHost(""); setPort(22); setUsername("root");
+    setAuthMode("password"); setPassword(""); setPrivateKey(""); setPassphrase("");
+    setErr(null);
+  };
+
+  const close = () => { reset(); onClose(); };
+  // Above the early return: a hook runs on every render, open or not.
+  const backdrop = useBackdropClose(close);
+
   if (!isOpen) return null;
 
   const ftp = isFtp(protocol);
@@ -84,15 +96,6 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
     setErr(null);
   };
 
-  const reset = () => {
-    setProtocolState("ssh"); setPortTyped(false); setUserTyped(false);
-    setHost(""); setPort(22); setUsername("root");
-    setAuthMode("password"); setPassword(""); setPrivateKey(""); setPassphrase("");
-    setErr(null);
-  };
-
-  const close = () => { reset(); onClose(); };
-
   const connect = () => {
     setErr(null);
     if (!host.trim()) { setErr(t("Host is required")); return; }
@@ -116,7 +119,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3" onClick={close}>
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3" {...backdrop}>
       <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-shade-121214 border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between">

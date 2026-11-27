@@ -6,6 +6,7 @@ import PasswordField from "./PasswordField";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { FormError, unsavedQuestion, useUnsavedGuard } from "../ui/slideOverForm";
+import { useBackdropClose } from "../ui/backdrop";
 import { folderTree } from "../util/folderTree";
 import { DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
 import { DEFAULT_SESSION_KEEP } from "../util/sessionKeep";
@@ -278,6 +279,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     setImportSelected(new Set());
     setImportPasteText("");
   };
+  const importBackdrop = useBackdropClose(closeImportModal);
 
   const toggleSelectAll = () => {
     if (importSelected.size === importHosts.length) {
@@ -1482,7 +1484,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
       {importOpen && createPortal(
         <div
           className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={closeImportModal}
+          {...importBackdrop}
         >
           <div
             role="dialog"

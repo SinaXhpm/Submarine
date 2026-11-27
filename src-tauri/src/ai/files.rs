@@ -464,6 +464,12 @@ impl Fs {
         let mut last = start.saturating_sub(1);
         for (k, line) in all.iter().enumerate().skip(first).take(max as usize) {
             if body.len() + line.len() > MAX_READ {
+                // Not even the first line fits: said, not shown as "no lines",
+                // which reads as an empty file. No stamp: nothing was read.
+                if k == first {
+                    let size = super::shape::thousands(line.len() as u64);
+                    return Err(format!("line {start} alone is {size} bytes, more than a read shows; read parts of it with cut -c or head -c through run_command"));
+                }
                 break;
             }
             push_shown(&mut body, &all, &keys, k, k == first);

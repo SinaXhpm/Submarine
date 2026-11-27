@@ -164,7 +164,8 @@ export default function FtpSessionView({ session, profile, displayName, onClose,
         if (e.payload?.auth && LOGIN_REFUSED.test(why) && passwordRetries.current < 2) {
           passwordRetries.current += 1;
           askPassword.current = true;
-          setTimeout(() => connect(), 300);
+          // Not when the tab closed meanwhile: it would log in again.
+          setTimeout(() => { if (!cancelled) connect(); }, 300);
         }
       }),
       // The server can't be reached any more (with why), or a Disconnect.

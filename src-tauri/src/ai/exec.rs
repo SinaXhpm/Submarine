@@ -455,6 +455,8 @@ pub async fn run<H: russh::client::Handler>(
     let mut answered = false;
     let mut stopping: Option<(Ended, Instant)> = None;
     let mut lost = false;
+    // The read ended without the server's close: the connection went.
+    let mut gone = false;
     // When the exit status came, and when the output last moved.
     let mut exited: Option<Instant> = None;
     let mut moved = Instant::now();
@@ -518,7 +520,10 @@ pub async fn run<H: russh::client::Handler>(
                     break;
                 }
                 // The connection went. What was still on its way is lost.
-                None => break,
+                None => {
+                    gone = true;
+                    break;
+                }
                 _ => {}
             },
             _ = &mut deadline, if stopping.is_none() => {
@@ -588,7 +593,8 @@ pub async fn run<H: russh::client::Handler>(
     if let Some(t) = err.flush(true) {
         on_output(Stream::Err, t);
     }
-    if lost || (status.is_none() && signal.is_none() && stopping.is_none() && !alive()) {
+    // Gone before the exit status: the tab's watcher may not have seen it yet.
+    if lost || (status.is_none() && signal.is_none() && stopping.is_none() && (gone || !alive())) {
         let _ = channel.close().await;
         return Ok(Outcome { ended: Ended::Lost, status, signal, elapsed: started.elapsed(), timeout, stdout: out.capture, stderr: err.capture, tail: Tail::Whole });
     }
@@ -1574,6 +1580,18 @@ mod ssh_tests {
         assert_eq!((o.ended, o.status, signals.load(Ordering::SeqCst)), (Ended::TimedOut, Some(143), 1));
         assert_eq!(o.stdout.ui, b"out\ncleaning up\n");
         assert!(took < Duration::from_secs(1) + DRAIN_AFTER_STOP, "ended by the server's close: {took:?}");
+    }
+
+    /// The connection goes while the command runs, before its exit status
+    /// and before the tab's watcher has seen it: connection lost, not a
+    /// command that ended with its status unknown and its output whole.
+    #[tokio::test]
+    async fn a_connection_lost_before_the_exit_status_is_connection_lost() {
+        let s = session(TestServer::default()).await;
+        let (_k, stop) = never();
+        let o = run(&s, "gone", None, MINUTE, stop, || true, |_, _| {}).await.unwrap();
+        assert_eq!(o.ended, Ended::Lost);
+        assert_eq!(o.summary(), CONNECTION_LOST);
     }
 
     #[tokio::test]

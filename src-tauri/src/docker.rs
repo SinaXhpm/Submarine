@@ -196,7 +196,23 @@ async fn run_with_sudo_retry(
         return Ok((code1 == 0, out1, false));
     }
     let (code2, out2) = run_capture(state, session_id, with_sudo, timeout).await?;
+    // A sudo that can't run says less than Docker's own answer.
+    if sudo_refused(code2, &out2) {
+        return Ok((false, out1, false));
+    }
     Ok((code2 == 0, out2, true))
+}
+
+/// The `sudo -n` retry ended in sudo itself: no sudo (Alpine, OpenWrt), a
+/// password it may not ask for, or a login it turns away.
+fn sudo_refused(code: i32, out: &str) -> bool {
+    let m = out.to_ascii_lowercase();
+    code != 0
+        && (crate::sudo_missing(code, out)
+            || m.trim_start().starts_with("sudo:")
+            || m.contains("not in the sudoers")
+            || m.contains("may not run sudo")
+            || m.contains("is not allowed to execute"))
 }
 
 #[derive(Serialize)]
@@ -831,6 +847,20 @@ mod stream_tests {
         streams.stop_all().await;
         assert!(b.await.unwrap_err().is_cancelled());
         assert!(streams.streams.lock().await.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod sudo_retry_tests {
+    use super::sudo_refused;
+
+    #[test]
+    fn a_sudo_that_cannot_run_leaves_dockers_own_answer() {
+        assert!(sudo_refused(1, "sudo: a password is required"));
+        assert!(sudo_refused(127, "sh: sudo: not found"));
+        assert!(sudo_refused(1, "someone is not in the sudoers file.  This incident will be reported."));
+        assert!(!sudo_refused(1, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"));
+        assert!(!sudo_refused(0, "sudo: unable to resolve host x\nCONTAINER ID"));
     }
 }
 

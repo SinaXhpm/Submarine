@@ -25,6 +25,11 @@ const BASE: Record<string, number> = {
   Numpad1: 0x4f, Numpad2: 0x50, Numpad3: 0x51, Numpad0: 0x52, NumpadDecimal: 0x53,
   IntlBackslash: 0x56, F11: 0x57, F12: 0x58,
   IntlRo: 0x73, IntlYen: 0x7d,
+  // The Japanese and Korean input keys (Lang1 is Han/Yeong, Lang2 Hanja), and
+  // F13 to F24. Pause has none: RDP sends it as a sequence of its own.
+  KanaMode: 0x70, Lang2: 0x71, Lang1: 0x72, Convert: 0x79, NonConvert: 0x7b,
+  F13: 0x64, F14: 0x65, F15: 0x66, F16: 0x67, F17: 0x68, F18: 0x69,
+  F19: 0x6a, F20: 0x6b, F21: 0x6c, F22: 0x6d, F23: 0x6e, F24: 0x76,
 };
 
 const EXTENDED: Record<string, number> = {

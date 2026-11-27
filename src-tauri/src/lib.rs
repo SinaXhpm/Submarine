@@ -6648,6 +6648,9 @@ async fn teardown_profile(
     // that never answers would otherwise keep its connection, the node's
     // password or key and its events going), and the list is emptied.
     monitor::stop_all(monitor_map.clone()).await;
+    // Their settings were this profile's. The next profile loads its own on
+    // the first `monitor_get_settings`, which reads them only over defaults.
+    *app.state::<SharedSettings>().lock().await = monitor::MonitorSettings::default();
 
     // 1b. Lock sharing too. The account's sharing identity (its secret half
     // is wiped) outlived a lock until now: someone at the picker could take a
@@ -11478,11 +11481,13 @@ async fn resolve_login_user(
 /// Authenticator and the like) turns the password method down even for the
 /// right password: sshd gives the password to the code question too. It takes
 /// keyboard-interactive as well, which asks for the password and then the code
-/// (OpenSSH tries that method first, so it logs in there). So the first
-/// password turned down while the server offers keyboard-interactive isn't
-/// asked for again here: it goes into `handoff`, and this ends with
-/// `Ok(false)`, for the caller's keyboard-interactive to answer the server's
-/// password question with it. A wrong one is asked for again there.
+/// (OpenSSH tries that method first, so it logs in there). So a password
+/// turned down while the server offers keyboard-interactive isn't asked for
+/// again here. The other passwords in hand are tried first (a stale cached one
+/// mustn't hide the right saved one); then the first turned down goes into
+/// `handoff`, and this ends with `Ok(false)`, for the caller's
+/// keyboard-interactive to answer the server's password question with it. A
+/// wrong one is asked for again there.
 #[allow(clippy::too_many_arguments)]
 async fn authenticate_password_prompting<H: russh::client::Handler>(
     session: &mut russh::client::Handle<H>,
@@ -11503,6 +11508,9 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
     let mut prompts_used: u32 = 0;
     // The last typed password was ticked "Save password".
     let mut save_typed = false;
+    // The first password in hand turned down while the server takes
+    // keyboard-interactive, kept while the others are tried.
+    let mut first_turned_down: Option<KbiHandoff> = None;
 
     if nothing_in_hand {
         // An ssh-agent on this device may log in without asking for anything.
@@ -11616,6 +11624,15 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
                 password_offered = remaining_methods.contains(&russh::MethodKind::Password);
                 if let Some(handoff) = handoff.as_deref_mut() {
                     if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive) {
+                        // Another password in hand goes to the password method
+                        // first. On a server that asks for a code after the
+                        // password they're all turned down, so the first, the
+                        // likeliest, is the one that goes on.
+                        if source != SecretSource::Prompt && password_offered && !candidates.as_slice().is_empty() {
+                            first_turned_down.get_or_insert(KbiHandoff { password, source, save: false });
+                            rejected = true;
+                            continue;
+                        }
                         ctx.log(
                             if password_offered {
                                 "Password rejected. The server also takes keyboard-interactive, which can ask for a code after the password: trying that."
@@ -11624,7 +11641,11 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
                             },
                             "info",
                         );
-                        *handoff = Some(KbiHandoff { password, source, save: source == SecretSource::Prompt && save_typed });
+                        *handoff = Some(first_turned_down.take().unwrap_or(KbiHandoff {
+                            password,
+                            source,
+                            save: source == SecretSource::Prompt && save_typed,
+                        }));
                         return Ok(false);
                     }
                 }
@@ -20236,6 +20257,14 @@ fn service_command(manager: ServiceManager, sudo: bool, action: &str, name: &str
     }
 }
 
+/// One chain's rules as the firewall tool lists them. `cut`: the list is
+/// longer than `run_exec_capture` reads (64 KiB) and ends early.
+#[derive(serde::Serialize)]
+struct FwChainText {
+    text: String,
+    cut: bool,
+}
+
 // Two-stage firewall probe (lazy detail fetch). The network section returns
 // a per-chain summary only; this command pulls the raw rules for one chain
 // on user expand. Wire cost stays proportional to what the user actually
@@ -20246,7 +20275,7 @@ async fn ssh_iptables_chain(
     session_id: String,
     table: String,
     chain: String,
-) -> Result<String, String> {
+) -> Result<FwChainText, String> {
     // Locked table allow-list; anything not here is rejected. Matches what
     // the probe script iterates over, plus `security` which some hardened
     // distros expose.
@@ -20267,7 +20296,8 @@ if [ -z \"$OUT\" ]; then OUT=$(sudo -n iptables -t {t} -n -v -L {c} --line-numbe
 printf '%s' \"$OUT\"",
         t = table, c = chain
     );
-    run_exec_capture(&state, &session_id, &cmd, 15).await
+    let (text, cut) = run_exec_capture_cut(&state, &session_id, &cmd, 15).await?;
+    Ok(FwChainText { text, cut })
 }
 
 #[tauri::command]
@@ -20277,7 +20307,7 @@ async fn ssh_nft_chain(
     family: String,
     table: String,
     chain: String,
-) -> Result<String, String> {
+) -> Result<FwChainText, String> {
     if !matches!(family.as_str(), "ip" | "ip6" | "inet" | "arp" | "bridge" | "netdev") {
         return Err("invalid family".to_string());
     }
@@ -20290,7 +20320,8 @@ if [ -z \"$OUT\" ]; then OUT=$(sudo -n nft list chain {f} {t} {c} 2>/dev/null); 
 printf '%s' \"$OUT\"",
         f = family, t = table, c = chain
     );
-    run_exec_capture(&state, &session_id, &cmd, 15).await
+    let (text, cut) = run_exec_capture_cut(&state, &session_id, &cmd, 15).await?;
+    Ok(FwChainText { text, cut })
 }
 
 #[cfg(all(test, unix))]
@@ -20518,6 +20549,16 @@ async fn run_exec_capture(
     cmd: &str,
     timeout_secs: u64,
 ) -> Result<String, String> {
+    Ok(run_exec_capture_cut(state, session_id, cmd, timeout_secs).await?.0)
+}
+
+/// `run_exec_capture`, and whether the output went past the 64 KiB it reads.
+async fn run_exec_capture_cut(
+    state: &SshState,
+    session_id: &str,
+    cmd: &str,
+    timeout_secs: u64,
+) -> Result<(String, bool), String> {
     use tokio::io::AsyncReadExt;
     use std::sync::Arc;
 
@@ -20531,13 +20572,17 @@ async fn run_exec_capture(
     remote_sh::run_script(&channel, &with_info_path(cmd), deadline).await?;
     let mut stream = channel.into_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut cut = false;
     let read_fut = async {
         let mut tmp = [0u8; 4096];
         loop {
             match stream.read(&mut tmp).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if buf.len() + n > 64 * 1024 { break; }
+                    if buf.len() + n > 64 * 1024 {
+                        cut = true;
+                        break;
+                    }
                     buf.extend_from_slice(&tmp[..n]);
                 }
             }
@@ -20546,7 +20591,7 @@ async fn run_exec_capture(
     tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| format!("exec timed out after {}s", timeout_secs))?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok((String::from_utf8_lossy(&buf).into_owned(), cut))
 }
 
 fn parse_exit_marker(raw: &str) -> (i32, String) {
@@ -26621,6 +26666,12 @@ struct MonitorRow {
     connected: bool,
     last_error: Option<String>,
     last_sample_ts: Option<u64>,
+    /// The live failure streak. `outage_since_ms` (its first failure) is
+    /// there once the streak reaches the outage threshold, as the outage
+    /// event fires: the card's "outage" chip and "Offline 3m" strip. A failed
+    /// poll before that shows as an error only.
+    consecutive_failures: u32,
+    outage_since_ms: Option<u64>,
 }
 
 fn load_settings_from_db(conn: &rusqlite::Connection) -> monitor::MonitorSettings {
@@ -26693,6 +26744,7 @@ async fn monitor_set_settings(
 async fn monitor_list(
     db_state: tauri::State<'_, DbState>,
     map: tauri::State<'_, MonitorMap>,
+    settings: tauri::State<'_, SharedSettings>,
 ) -> Result<Vec<MonitorRow>, String> {
     // Pull DB rows first so we always include configured-but-paused entries
     // even if they have no live MonitorEntry yet.
@@ -26741,6 +26793,7 @@ async fn monitor_list(
     let live_by_id: std::collections::HashMap<i32, monitor::MonitorInfo> =
         live.into_iter().map(|m| (m.node_id, m)).collect();
 
+    let threshold = settings.lock().await.outage_threshold;
     Ok(configs.into_iter().map(|(node_id, name, host, port, metrics, customs, paused)| {
         let live = live_by_id.get(&node_id);
         MonitorRow {
@@ -26753,6 +26806,8 @@ async fn monitor_list(
             connected: live.map(|l| l.connected).unwrap_or(false),
             last_error: live.and_then(|l| l.last_error.clone()),
             last_sample_ts: live.and_then(|l| l.last_sample_ts),
+            consecutive_failures: live.map(|l| l.consecutive_failures).unwrap_or(0),
+            outage_since_ms: live.filter(|l| l.consecutive_failures >= threshold).and_then(|l| l.outage_since_ms),
         }
     }).collect())
 }

@@ -16,6 +16,7 @@ import {
 import { localDir, localJoin, pathCrumbs } from "../fs/localPath";
 import { COMPARE_LABEL, CompareMark, compareListings } from "../fs/compare";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
+import { useBackdropClose } from "../ui/backdrop";
 import { IS_ANDROID, IS_IOS, IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
 import { BOOKMARKS_MAX, readBookmarks, writeBookmarks } from "../util/sftpBookmarks";
@@ -409,6 +410,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // "archive": v1 is the name without its extension, v2 the format, `items`
   // what was selected when the dialog opened.
   const [modal, setModal] = useState<{ type: "rename" | "mkdir" | "properties" | "move" | "move-bulk" | "archive"; entry?: FileEntry; items?: FileEntry[]; v1?: string; v2?: string; orig?: { mode: number; uid?: number } } | null>(null);
+  const modalBackdrop = useBackdropClose(() => setModal(null));
   const [notification, setNotification] = useState<{ msg: string; type: "info" | "success" | "error" } | null>(null);
   const notifyTimerRef = useRef<number | null>(null);
   const [jobs, setJobs] = useState<ArchiveJob[]>([]);
@@ -554,6 +556,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // answer would land last and put the pane back in the folder just left.
   const listSeqRef = useRef(0);
 
+  // The path box shows the folder listed, but not over a path being typed in
+  // it (focused, and its text no longer the folder shown).
+  const syncPathBox = (path: string) => {
+    const box = pathInputRef.current;
+    if (box && document.activeElement === box && box.value !== currentPathRef.current) return;
+    setTempInput(path);
+  };
+
   // `reveal`: a row to select in the new folder if it is there (going up
   // selects the folder just left).
   // `fallback`: another path to list if this one can't be (see the path box).
@@ -569,7 +579,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       setEntries(result.entries);
       setViaShell(!!result.viaShell);
       setCurrentPath(result.currentPath);
-      setTempInput(result.currentPath);
+      syncPathBox(result.currentPath);
       if (result.currentPath === currentPathRef.current) {
         // A refresh keeps the selection and the keyboard's row, less what
         // is gone. It ends a run of Shift ranges, whose base may be gone.
@@ -619,7 +629,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         setEntries(result.entries);
         setViaShell(!!result.viaShell);
         setCurrentPath(result.currentPath);
-        setTempInput(result.currentPath);
+        syncPathBox(result.currentPath);
         setSelected(new Set());
         setAnchor(null);
         setCursor(null);
@@ -884,8 +894,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // full text from the backend.
   useEffect(() => {
     if (!sessionId) return;
-    let unlisten: (() => void) | null = null;
-    listen<{ status: string; message?: string }>(
+    // Unlistened through the promise: the panel can close before it settles.
+    const sub = listen<{ status: string; message?: string }>(
       `sftp-sync-status-${sessionId}`,
       (event) => {
         const { status, message } = event.payload || ({} as any);
@@ -895,8 +905,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           notify(message || t("Auto-sync failed"), "error");
         }
       },
-    ).then((u) => { unlisten = u; });
-    return () => { if (unlisten) unlisten(); };
+    );
+    return () => { sub.then((fn) => fn()); };
   }, [sessionId]);
 
   // ---- OS-level drag-drop into this pane --------------------------------------
@@ -912,8 +922,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   useEffect(() => {
     if (!sessionId || provider.id !== "remote") return;
-    let unlisten: (() => void) | null = null;
-    listen<{ paths: string[]; position: { x: number; y: number } }>(
+    // Unlistened through the promise: the panel can close before it settles.
+    const sub = listen<{ paths: string[]; position: { x: number; y: number } }>(
       "tauri://drag-drop",
       async (event) => {
         const { paths, position } = event.payload || ({} as any);
@@ -931,7 +941,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         let cancelled = false;
         for (const p of paths) {
           if (cancelled) break;
-          const name = p.split(/[\\/]/).pop() || "file";
+          const name = (IS_WINDOWS ? p.split(/[\\/]/) : p.split("/")).pop() || "file";
           notify(t("Uploading {name}...", { name }), "info");
           try {
             // A folder goes as in uploadItems: it is given the folder it goes
@@ -955,8 +965,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (cancelled) notify(count > 0 ? t("Upload stopped after {count} of {total} items", { count, total: paths.length }) : t("Upload batch cancelled"), "info");
         await fetch(dir);
       }
-    ).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
+    );
+    return () => { sub.then((fn) => fn()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, provider.id]);
 
@@ -2578,7 +2588,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
       {/* Modal */}
       {modal && (
-        <div className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setModal(null)}>
+        <div className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" {...modalBackdrop}>
           <div onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setModal(null); } }}
             className="w-full max-w-[320px] bg-shade-121214 border border-white/5 rounded-xl shadow-2xl p-4 font-mono text-[11px]">
@@ -2674,7 +2684,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     </div>
                     <div className="flex-1">
                       <label className="text-[10px] text-zinc-400 block mb-1">{t("Owner UID")}</label>
-                      <input type="text" value={modal.v2 || ""} onChange={(e) => setModal({ ...modal, v2: e.target.value })}
+                      <input type="text" value={modal.v2 || ""}
+                        onChange={(e) => {
+                          // Digits only: parseInt would read "1,000" as UID 1.
+                          setModal({ ...modal, v2: e.target.value.replace(/\D/g, "") });
+                        }}
                         className="w-full h-7 px-2 bg-white/5 border border-white/5 rounded text-zinc-200 focus:outline-none focus:border-indigo-400/40 text-[11.5px]" />
                     </div>
                   </div>

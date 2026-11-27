@@ -329,6 +329,12 @@ function DesktopApp() {
     for (const s of sessions) if (byId.has(s.id)) out.push(s);
     return out;
   }, [sessions, tabOrder]);
+  // A closed tab leaves the order: opened again, it goes at the end, and the
+  // next profile, whose tabs are numbered the same way, doesn't get its places.
+  useEffect(() => {
+    const open = new Set(sessions.map((s) => s.id));
+    setTabOrder((prev) => (prev.every((id) => open.has(id)) ? prev : prev.filter((id) => open.has(id))));
+  }, [sessions]);
   // The tab being dragged along the strip, once it has moved.
   const [draggingTab, setDraggingTab] = useState<string | null>(null);
   // The + after the tabs: its menu opens under it.
@@ -1283,10 +1289,10 @@ function DesktopApp() {
     try { await ai.persist(); }
     catch (e) {
       const lockAnyway = await confirm({
-        title: "Lock without saving?",
-        message: `The AI assistant's chats and settings couldn't be saved: ${errText(e)}\n\nIf you lock now, what changed in them since the last good save is lost.`,
-        okLabel: "Lock anyway",
-        cancelLabel: "Stay",
+        title: t("Lock without saving?"),
+        message: t("The AI assistant's chats and settings couldn't be saved: {error}\n\nIf you lock now, what changed in them since the last good save is lost.", { error: errText(e) }),
+        okLabel: t("Lock anyway"),
+        cancelLabel: t("Stay"),
         destructive: true,
         safeDefault: true,
       });
@@ -1341,6 +1347,8 @@ function DesktopApp() {
     setNewNode(defaultNode);
     setEditCredData(EMPTY_CRED);
     setEditKeyData(EMPTY_KEY);
+    // Nor this profile's lines in the Activity log: they name its servers.
+    setLogs([]);
     addLog(t("Profile locked."), "info");
   };
 
@@ -1726,20 +1734,22 @@ function DesktopApp() {
   // terminal gets Ctrl+Tab as a plain Tab, so the shell loses nothing). In the
   // capture phase, before a terminal turns the keys into input. Left alone:
   // keys in a remote desktop, which are the remote's own (switching its
-  // windows, say), keys while a dialog is open, and the keys Settings is
-  // taking for a shortcut. In the open-a-server menu, its key closes it (see
-  // OpenServerMenu).
+  // windows, say), keys while a dialog or a form is open, and the keys
+  // Settings is taking for a shortcut. In the open-a-server menu, its key
+  // closes it (see OpenServerMenu).
   const orderedSessionsRef = useRef(orderedSessions);
   orderedSessionsRef.current = orderedSessions;
   const activeViewRef = useRef(activeView);
   activeViewRef.current = activeView;
+  const overlayOpenRef = useRef(overlayOpen);
+  overlayOpenRef.current = overlayOpen;
   const openServerButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const action = matchShortcut(e, APP_SHORTCUTS);
       if (!action) return;
       if ((e.target as HTMLElement | null)?.closest?.("[data-remote-keys], [data-shortcut-recorder], [data-open-server-menu]")) return;
-      if (document.querySelector('[aria-modal="true"]')) return;
+      if (overlayOpenRef.current || document.querySelector('[aria-modal="true"]')) return;
       if (action === "openServer") {
         const plus = openServerButton.current;
         if (!plus) return;
@@ -3017,12 +3027,9 @@ function DesktopApp() {
                           )}
                           <ErrorBoundary
                             label={tabLabel(sess)}
-                            onReset={() => {
-                              setSessions(prev => prev.filter(s => s.id !== sess.id));
-                              clearTabName(sess.id);
-                              clearOscTitle(sess.id);
-                              if (activeView === sess.id) setActiveView("nodes");
-                            }}
+                            // Closed as by its own close: the split, the Wall,
+                            // broadcast and its status forget it too.
+                            onReset={getCloseHandler(sess.id)}
                           >
                             {sess.protocol === "rdp" ? (
                               <RdpSessionView

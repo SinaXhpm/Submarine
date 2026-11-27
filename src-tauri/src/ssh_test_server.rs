@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 ///     that has ended (exit status 0) on a channel that stays open after it
 ///     (`after_exit`);
 ///   * `dropped` — exit status 0, then the connection goes;
+///   * `gone`    — a line, then the connection goes, with no exit status;
 ///   * `polite` — runs until a `signal` request, then says a last line and
 ///     ends with status 143.
 ///
@@ -410,13 +411,16 @@ impl server::Handler for TestServer {
             return Ok(());
         }
         // `dropped`: a line and exit status 0, then the connection goes, with
-        // the server's close still owed.
-        if command == "dropped" {
+        // the server's close still owed. `gone`: the same without the status.
+        if command == "dropped" || command == "gone" {
             session.channel_success(channel)?;
             let handle = session.handle();
+            let status = command == "dropped";
             tokio::spawn(async move {
                 let _ = handle.data(channel, b"out\n".to_vec()).await;
-                let _ = handle.exit_status_request(channel, 0).await;
+                if status {
+                    let _ = handle.exit_status_request(channel, 0).await;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 let _ = handle.disconnect(russh::Disconnect::ByApplication, String::new(), String::new()).await;
             });

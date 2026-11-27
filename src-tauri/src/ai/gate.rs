@@ -999,9 +999,12 @@ fn proc_secret(p: &str) -> bool {
 
 /// A secret path for a login whose home is `home`. A root login's own home
 /// (`/root`) is where its work is, so the place rule for `/root` leaves it
-/// out; the name rules (`.ssh`, keys, `.env`) still hold there.
+/// out; the name rules (`.ssh`, keys, `.env`) still hold there. The place
+/// rules take the path as every system names it and in any case, as
+/// `persists` does: macOS has `/private/etc/sudoers`, and `/ETC/sudoers`.
 fn secret(p: &str, write: bool, home: &str) -> bool {
-    secret_by_name(p) || (secret_by_place(p, write) && !(home == "/root" && under(p, "/root")))
+    let place = canon(&p.to_ascii_lowercase());
+    secret_by_name(p) || (secret_by_place(&place, write) && !(home == "/root" && under(&place, "/root")))
 }
 
 /// A sensitive path. `write` adds the paths that are sensitive only
@@ -4157,6 +4160,8 @@ mod tests {
         "cat /etc/shadow",
         "cat /etc/shadow-",
         "cat /etc/sudoers.d/x",
+        "cat /private/etc/sudoers",
+        "cat /ETC/sudoers",
         "head /root/x",
         "ls /etc/ssh",
         "cat ~/.aws/credentials",
@@ -5082,6 +5087,10 @@ mod tests {
             ("/var/www/../../etc/shadow", false),
             ("~/x/../.ssh/id_rsa", false),
             ("//etc//./shadow", false),
+            // macOS keeps /etc in /private, and its file system ignores case.
+            ("/private/etc/sudoers", false),
+            ("/private/etc/ssh/ssh_host_ed25519_key", true),
+            ("/ETC/Sudoers", false),
             // Written with backslashes, as a Windows server (or MSYS there)
             // reads them.
             (r"C:\Users\u\.aws\credentials", false),

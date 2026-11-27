@@ -613,10 +613,11 @@ impl FtpSftp {
                 return Ok(e);
             }
         }
-        // From its folder's listing.
+        // From its folder's listing: what it gave, which a full cache doesn't
+        // keep (the last of a name, as the cache would).
         let (dir, name) = split(path);
-        if self.list(&dir).await.is_ok() {
-            return self.cached(path).ok_or_else(|| status(StatusCode::NoSuchFile, "No such file"));
+        if let Ok(entries) = self.list(&dir).await {
+            return entries.into_iter().rfind(|e| e.name == name).ok_or_else(|| status(StatusCode::NoSuchFile, "No such file"));
         }
         // The folder can't be listed: ask about the path itself.
         if again_if_broken!(self, c => c.is_dir(path))? {

@@ -399,7 +399,10 @@ impl Filter {
 fn builtin_skip(path: &str) -> bool {
     const DEFAULTS: &[&str] = &[".git/", "node_modules/", ".DS_Store", "Thumbs.db"];
     const DEFAULT_EXT: &[&str] = &[".swp", ".swo", ".tmp", ".part", MIRROR_TEMP];
-    DEFAULTS.iter().any(|d| path.contains(d)) || DEFAULT_EXT.iter().any(|e| path.ends_with(e))
+    // Every name on the path: a file in a folder named `build.tmp` is left out
+    // with the folder, as the scan leaves it out.
+    DEFAULTS.iter().any(|d| path.contains(d))
+        || path.split('/').any(|name| DEFAULT_EXT.iter().any(|e| name.ends_with(e)))
 }
 
 /// Translate a local path under `local_root` into the corresponding remote
@@ -3295,6 +3298,9 @@ mod tests {
             ("x.swp", false),
             ("big.iso.part", false),
             ("a.txt.submarine-tmp", false),
+            // In a folder left out by its ending, as the watcher asks.
+            ("build.tmp/a.txt", false),
+            ("x/dl.part/sub/b.bin", false),
         ] {
             assert!(filter.skips(rel, is_dir), "{rel}");
         }

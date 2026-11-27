@@ -932,10 +932,10 @@ const ContainerDetailsModal = ({
     // knows this stream only once the start has returned, so until then this
     // function is the one that has to end it.
     const wanted = () => liveStreamIdRef.current === sid;
-    // Pre-load current tail so the viewer isn't empty until something new
-    // is written. The follow stream will append to whatever's there.
-    if (!logs) await fetchLogs(logsTail);
-    if (!wanted()) return;
+    // The follow starts with the last `logsTail` lines, and they take the
+    // place of what is shown: from "now" on, it missed what was written
+    // since the last load.
+    let first = true;
     const unlisteners: (() => void)[] = [];
     // Clean up listeners when live ends or modal closes.
     const cleanup = () => {
@@ -954,8 +954,10 @@ const ContainerDetailsModal = ({
             const chunk = logBufRef.current;
             logBufRef.current = "";
             if (!chunk) return;
+            const replace = first;
+            first = false;
             setLogs(prev => {
-              const next = prev + chunk;
+              const next = replace ? chunk : prev + chunk;
               // Trim from the front: every update lays all of this text out
               // again, so what a long live tail holds is what the page pays
               // for, up to 60 times a second.
@@ -968,7 +970,7 @@ const ContainerDetailsModal = ({
         setLive(false);
         liveStreamIdRef.current = null;
       }));
-      if (wanted()) await invoke("ssh_docker_logs_start", { sessionId, streamId: sid, container: name, tail: 0 });
+      if (wanted()) await invoke("ssh_docker_logs_start", { sessionId, streamId: sid, container: name, tail: logsTail });
       if (wanted()) {
         (liveStreamIdRef as any).cleanup = cleanup;
       } else {
