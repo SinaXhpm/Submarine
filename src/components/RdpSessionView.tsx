@@ -13,7 +13,7 @@ import {
   RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, RDP_PRESETS, describeRdpOptions, pinRdpAddress, rdpGraphics, rdpNeedsReconnect, rdpShare, readRdpOptions, writeRdpOptions,
   type RdpOptions,
 } from "../util/rdpOptions";
-import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
+import { type PasteKeys, ServerCopyWatch, clipboardMark, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
 import { useT, tn, tx } from "../i18n";
 import NotConnected from "./NotConnected";
@@ -45,10 +45,6 @@ type LogLine = { msg: string; type: string; time: string };
 // come by themselves), "coming" is on its way (`done` bytes so far), "here"
 // waits for "Copy them here", and "copied" is on this device's clipboard.
 type ServerFiles = { set: number; files: number; bytes: number; state: "offered" | "coming" | "here" | "copied"; done?: number; error?: string };
-
-// This device's clipboard mark now (rdp_builtin_files_mark): it changes when
-// anything is copied here. None where that can't be told.
-const clipboardMark = () => invoke<number | null>("rdp_builtin_files_mark").catch(() => null);
 
 // `shown`: the tab is on screen (alone, or in a split), not behind another view.
 export default function RdpSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
@@ -82,6 +78,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // clipboard by itself (the tab wasn't in front, or a webview that wants a
   // click for that): one click does.
   const [serverCopy, setServerCopy] = useState<string | null>(null);
+  // Whether the user copied on the server last (see pasteToServer).
+  const [watch] = useState(() => new ServerCopyWatch());
   const inFront = useRef(false);
   // Files the user copied on the server, and the set that goes on this
   // device's clipboard by itself once here: the one copied with the tab in
@@ -171,12 +169,13 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       setServerCopy(null);
       setServerFiles(null);
       filesFor.current = null;
+      watch.forget();
       return;
     }
     const options = readRdpOptions(session.serverUuid);
     setUsedOptions(describeRdpOptions(options));
     invoke("initiate_rdp", { sessionId: session.id, serverId: session.serverId, useSshAgent: readUseSshAgent(), options }).catch(failed);
-  }, [builtin, session.id, session.serverId, session.serverUuid, pushLog, t]);
+  }, [builtin, session.id, session.serverId, session.serverUuid, pushLog, t, watch]);
 
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).
@@ -197,7 +196,10 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         // Where the mark can't be told (Linux), only while the tab is in front.
         if (mark !== null || (inFront.current && document.hasFocus())) {
           try {
-            if (await invoke<boolean>("rdp_builtin_files_to_clipboard", { sessionId: id, set, mark })) state = "copied";
+            if (await invoke<boolean>("rdp_builtin_files_to_clipboard", { sessionId: id, set, mark })) {
+              state = "copied";
+              watch.copiedHere(null);
+            }
           } catch (e) {
             error = String(e);
           }
@@ -287,9 +289,20 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       listen(`rdp-app-failed-${id}`, (e: any) => {
         setAppFailed(Array.isArray(e.payload?.said) ? e.payload.said : []);
       }),
-      // Text the user copied on the server, for this computer's clipboard.
+      // The user copied on the server: its text (if it has any) for this
+      // computer's clipboard. Without text (an image, files) the server's
+      // clipboard holds something else than the text it had.
       listen(`rdp-clipboard-${id}`, (e: any) => {
-        takeServerCopy(String(e.payload?.text ?? ""), inFront.current, setServerCopy);
+        const text = e.payload?.text;
+        if (inFront.current && document.hasFocus()) watch.serverCopied();
+        else watch.forget();
+        if (typeof text !== "string") {
+          setServerCopy(null);
+          return;
+        }
+        void takeServerCopy(text, inFront.current, setServerCopy).then((here) => {
+          if (here) watch.copiedHere(text);
+        });
       }),
       // Files the user copied on the server, on their way here.
       listen(`rdp-files-${id}`, (e: any) => filesSaid(e.payload)),
@@ -306,7 +319,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       if (builtin) invoke("rdp_builtin_close", { sessionId: id }).catch(console.error);
       invoke("disconnect_session", { sessionId: id }).catch(console.error);
     };
-  }, [builtin, session.id, connect, pushLog, t, waiting]);
+  }, [builtin, session.id, connect, pushLog, t, waiting, watch]);
 
   const handleFingerprintResponse = async (accepted: boolean) => {
     const nonce = fingerprintPrompt?.nonce;
@@ -345,21 +358,26 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
 
   // This computer's clipboard to the server's, then the paste key (the Paste
   // button sends Ctrl+V) once the text is there. Files copied here go instead
-  // of text, when there are any (the backend sends the key then). When that
-  // can't be done, a held-back key press still goes on its own (its modifier is
-  // down on the server already) and the server pastes what it has; the button
-  // sends nothing.
+  // of text, when there are any (the backend sends the key then). A paste key
+  // goes alone when the user copied on the server last and nothing was copied
+  // here since (`watch`), when this computer's clipboard has no text, or
+  // when it can't go: the server pastes what it has. The button then sends
+  // nothing.
   const pasteToServer = async (keys: PasteKeys, fromKey: boolean) => {
     const keyAlone = () => {
-      const code = keys === "shiftinsert" ? scancodeFor("Insert") : keys === "ctrlv" ? scancodeFor("KeyV") : null;
-      if (!fromKey || code === null) return;
-      const key = keys === "shiftinsert" ? "Insert" : "v";
-      invoke("rdp_builtin_input", { sessionId: session.id, events: [{ t: "key", code, key, down: true }, { t: "key", code, key, down: false }] }).catch(() => {});
+      if (fromKey) invoke("rdp_builtin_paste_key", { sessionId: session.id, keys }).catch(() => {});
     };
+    if (fromKey && (await watch.sameMark())) {
+      keyAlone();
+      return;
+    }
     // A phone's clipboard holds no files.
     if (!IS_MOBILE) {
       try {
-        if (await invoke<boolean>("rdp_builtin_paste_files", { sessionId: session.id, keys })) return;
+        if (await invoke<boolean>("rdp_builtin_paste_files", { sessionId: session.id, keys })) {
+          watch.sentFromHere(null);
+          return;
+        }
       } catch (e) {
         // The files can't go: the text does, if there is any.
         pushLog({ msg: String(e), type: "warning" });
@@ -373,8 +391,19 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       keyAlone();
       return;
     }
+    if (fromKey && (await watch.sameText(text))) {
+      keyAlone();
+      return;
+    }
+    // Empty text would empty the server's clipboard: never sent.
+    if (!text) {
+      if (fromKey) keyAlone();
+      else pushLog({ msg: t("This device's clipboard holds no text to paste."), type: "warning" });
+      return;
+    }
     try {
       await invoke("rdp_builtin_paste", { sessionId: session.id, text, keys });
+      watch.sentFromHere(text);
     } catch (e) {
       pushLog({ msg: String(e), type: "warning" });
       keyAlone();
@@ -475,7 +504,10 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   };
   const copyFilesHere = (set: number) => {
     invoke("rdp_builtin_files_to_clipboard", { sessionId: session.id, set, mark: null }).then(
-      () => setServerFiles((f) => (f?.set === set ? { ...f, state: "copied", error: undefined } : f)),
+      () => {
+        watch.copiedHere(null);
+        setServerFiles((f) => (f?.set === set ? { ...f, state: "copied", error: undefined } : f));
+      },
       (e) => setServerFiles((f) => (f?.set === set ? { ...f, error: String(e) } : f)),
     );
   };
@@ -715,7 +747,10 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
             <span className="min-w-0 truncate">{t("Text was copied on the server ({count} characters).", { count: serverCopy.length })}</span>
             <button
-              onClick={() => copyText(serverCopy).then(() => setServerCopy(null), () => {})}
+              onClick={() => copyText(serverCopy).then(() => {
+                watch.copiedHere(serverCopy);
+                setServerCopy(null);
+              }, () => {})}
               className="shrink-0 h-6 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 font-semibold"
             >
               {t("Copy it here")}

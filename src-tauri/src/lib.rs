@@ -17942,10 +17942,12 @@ async fn rdp_builtin_open(
                 }
             }
         };
-        // What the user copied on the server, for the tab to put on this computer's clipboard.
+        // What the user copied on the server, for the tab to put on this
+        // computer's clipboard: its text, or none (an image, files: the tab
+        // only takes note that the server copied last).
         let remote_copy = {
             let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
-            move |text: String| {
+            move |text: Option<String>| {
                 if attempt.is_current_now() {
                     let _ = app.emit(&format!("rdp-clipboard-{sid}"), serde_json::json!({"text": text}));
                 }
@@ -18063,6 +18065,17 @@ async fn rdp_builtin_paste(rdp_clients: tauri::State<'_, RdpClients>, session_id
     Ok(())
 }
 
+/// The paste key the tab held back, alone: the server pastes what its
+/// clipboard holds (the user copied there last, or this computer's clipboard
+/// has nothing that can go).
+#[tauri::command]
+async fn rdp_builtin_paste_key(rdp_clients: tauri::State<'_, RdpClients>, session_id: String, keys: rdp_client::PasteKeys) -> Result<(), String> {
+    if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::PasteKey(keys));
+    }
+    Ok(())
+}
+
 /// The files copied on this computer for the server's clipboard (the tab's
 /// paste, as with text), then the paste key the tab held back. False when no
 /// files are copied here: the tab sends the text instead.
@@ -18116,8 +18129,9 @@ async fn rdp_builtin_stop_files(rdp_clients: tauri::State<'_, RdpClients>, sessi
 }
 
 /// A mark that changes whenever anything goes on this computer's clipboard
-/// (none where that can't be told). The tab takes it when the user copies
-/// files on the server, to tell later whether anything else was copied since.
+/// (none where that can't be told). The RDP and VNC tabs take it when the
+/// user copies on the server, to tell later whether anything was copied here
+/// since (util/rdpClipboard.ts).
 #[tauri::command]
 async fn rdp_builtin_files_mark(app: tauri::AppHandle) -> Result<Option<u64>, String> {
     Ok(file_clipboard::change_mark(&app).await)
@@ -27312,7 +27326,7 @@ pub fn run() {
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config, set_use_ssh_agent,
-            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_paste_files, rdp_builtin_fetch_files, rdp_builtin_stop_files, rdp_builtin_files_mark,
+            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_paste_key, rdp_builtin_paste_files, rdp_builtin_fetch_files, rdp_builtin_stop_files, rdp_builtin_files_mark,
             rdp_builtin_files_to_clipboard, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
             telnet_connect, telnet_open_terminal, ftp_connect, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,

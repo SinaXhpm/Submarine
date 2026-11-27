@@ -1972,6 +1972,7 @@
   "This deletes {email} on {host} and everything stored for it there: the cloud copies of your profiles, your sharing key, and every profile you shared (the people you shared it with lose access). The profiles on your devices are not touched. This can't be undone.": "Bu işlem {host} üzerindeki {email} hesabını ve orada ona ait her şeyi siler: profillerinizin buluttaki kopyaları, paylaşım anahtarınız ve paylaştığınız her profil (paylaştığınız kişiler erişimi kaybeder). Cihazlarınızdaki profillere dokunulmaz. Bu işlem geri alınamaz.",
   "This device → server": "Bu cihaz → sunucu",
   "This device's clipboard couldn't be read: {error}": "Bu cihazın panosu okunamadı: {error}",
+  "This device's clipboard holds no text to paste.": "Bu cihazın panosunda yapıştırılacak metin yok.",
   "This file may contain secrets (DB passwords, API keys). View-only — Submarine never edits compose files.": "Bu dosya gizli bilgiler (veritabanı parolaları, API anahtarları) içerebilir. Yalnızca görüntüleme: Submarine Compose dosyalarını asla düzenlemez.",
   "This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.": "Bu sunucu, yeniden kullanmak için en üst düzeye kaydedilir. İstediğiniz zaman Sunucular bölümünden düzenleyebilir veya kaldırabilirsiniz.",
   "This is a link: these are the settings of the file it points to, and changes apply to that file.": "Bu bir bağlantı: bunlar, işaret ettiği dosyanın ayarlarıdır ve değişiklikler o dosyaya uygulanır.",

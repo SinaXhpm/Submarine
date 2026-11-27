@@ -9,7 +9,7 @@ import { usePageShown } from "../hooks/usePageShown";
 import { readUseSshAgent } from "../util/sshAgent";
 import type { LinkStats } from "../util/screenLink";
 import { VNC_PRESETS, readVncOptions, vncNeedsReconnect, writeVncOptions, type VncOptions } from "../util/vncOptions";
-import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
+import { type PasteKeys, ServerCopyWatch, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
 import { useT, tk } from "../i18n";
 import NotConnected from "./NotConnected";
@@ -53,6 +53,8 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   // click for that); and why a paste didn't go to the server.
   const [shareClipboard, setShareClipboard] = useState(false);
   const [serverCopy, setServerCopy] = useState<string | null>(null);
+  // Whether the user copied on the server last (see pasteToServer).
+  const [watch] = useState(() => new ServerCopyWatch());
   const inFront = useRef(false);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
   // The tab's tools: this server's options on this device as the settings
@@ -115,7 +117,8 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
     setShareClipboard(options.clipboard);
     setServerCopy(null);
     setPasteNote(null);
-  }, [session.id, session.serverId, session.serverUuid, pushLog, t]);
+    watch.forget();
+  }, [session.id, session.serverId, session.serverUuid, pushLog, t, watch]);
 
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).
@@ -175,7 +178,11 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       // Text the user copied on the server, for this device's clipboard.
       listen(`vnc-clipboard-${id}`, (e: any) => {
         const text = String(e.payload?.text ?? "");
-        takeServerCopy(text, inFront.current, setServerCopy);
+        if (inFront.current && document.hasFocus()) watch.serverCopied();
+        else watch.forget();
+        void takeServerCopy(text, inFront.current, setServerCopy).then((here) => {
+          if (here) watch.copiedHere(text);
+        });
         // The server sends its clipboard as Latin-1; the VNC library reads it as
         // UTF-8, so a character beyond ASCII arrives as a replacement mark.
         if (text.includes("\uFFFD")) {
@@ -193,7 +200,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       subs.then((fns) => fns.forEach((f) => f()));
       invoke("disconnect_session", { sessionId: id }).catch(console.error);
     };
-  }, [session.id, connect, pushLog, t, waiting]);
+  }, [session.id, connect, pushLog, t, waiting, watch]);
 
   const handleFingerprintResponse = async (accepted: boolean) => {
     const nonce = fingerprintPrompt?.nonce;
@@ -213,7 +220,9 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   // button only sets the server's clipboard). Text the server's clipboard
   // can't carry isn't sent, and the tab says why; a held-back key press still
   // goes on its own (its modifier is down on the server already), and the
-  // server pastes what it has.
+  // server pastes what it has. So it does when the user copied on the server
+  // last and nothing was copied here since (`watch`), or this device's
+  // clipboard has no text.
   const pasteToServer = async (keys: PasteKeys, fromKey: boolean) => {
     const key = (code: string, k: string, down: boolean) => ({ t: "key", code: scancodeFor(code) ?? 0, key: k, down });
     const sendKey = () => {
@@ -225,6 +234,10 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         : [key("KeyV", "v", true), key("KeyV", "v", false)];
       invoke("vnc_input", { sessionId: session.id, events }).catch(() => {});
     };
+    if (fromKey && (await watch.sameMark())) {
+      sendKey();
+      return;
+    }
     let text: string;
     try {
       text = await readLocalClipboard();
@@ -233,8 +246,19 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       sendKey();
       return;
     }
+    if (fromKey && (await watch.sameText(text))) {
+      sendKey();
+      return;
+    }
+    // Empty text would empty the server's clipboard: never sent.
+    if (!text) {
+      if (!fromKey) setPasteNote(t("This device's clipboard holds no text to paste."));
+      sendKey();
+      return;
+    }
     try {
       await invoke("vnc_paste", { sessionId: session.id, text });
+      watch.sentFromHere(text);
       setPasteNote(null);
     } catch (e) {
       setPasteNote(String(e));
@@ -371,7 +395,10 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
           <span className="min-w-0 truncate">{t("Text was copied on the server ({count} characters).", { count: serverCopy.length })}</span>
           <button
-            onClick={() => copyText(serverCopy).then(() => setServerCopy(null), () => {})}
+            onClick={() => copyText(serverCopy).then(() => {
+              watch.copiedHere(serverCopy);
+              setServerCopy(null);
+            }, () => {})}
             className="shrink-0 h-6 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 font-semibold"
           >
             {t("Copy it here")}
