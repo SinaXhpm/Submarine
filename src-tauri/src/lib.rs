@@ -56,6 +56,7 @@ mod term_filter;
 mod session_log;
 mod vault_backup;
 mod folder_copy;
+mod folder_access;
 mod ai;
 mod gateway;
 #[cfg(target_os = "android")]
@@ -6883,6 +6884,7 @@ async fn folder_copy_choose(app_handle: tauri::AppHandle, name: String) -> Resul
         };
         let Some(dir) = chosen else { return Ok(None) };
         folder_copy::set(&vault, Some(&dir))?;
+        folder_access::remember(&app_handle, &dir);
         // A copy that fails shows in the status, with its reason.
         let _ = folder_copy::copy_now(&vault);
         Ok(Some(folder_copy::status(&vault)))
@@ -16944,16 +16946,21 @@ async fn list_mirrors(
     Ok(mirror::list(&mirrors, session_id.as_deref()).await)
 }
 
-/// Native OS folder picker. Used by MirrorsPanel to fill in `local`.
+/// Native OS folder picker: a mirror's folder, the RDP shared folder and the
+/// session-log folder.
 #[tauri::command]
-async fn pick_local_directory() -> Result<Option<String>, String> {
+async fn pick_local_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
     #[cfg(mobile)]
     {
+        let _ = app;
         return Err("Folder picker not available on a phone or tablet.".into());
     }
     #[cfg(desktop)]
     {
         let path = rfd::AsyncFileDialog::new().pick_folder().await;
+        if let Some(p) = &path {
+            folder_access::remember(&app, p.path());
+        }
         Ok(path.map(|p| p.path().to_string_lossy().into_owned()))
     }
 }
@@ -26148,9 +26155,10 @@ async fn local_rename(from: String, to: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn select_local_folder() -> Result<Option<String>, String> {
+async fn select_local_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
     #[cfg(mobile)]
     {
+        let _ = app;
         return Err("Folder picker not available on a phone or tablet.".into());
     }
     #[cfg(desktop)]
@@ -26159,6 +26167,9 @@ async fn select_local_folder() -> Result<Option<String>, String> {
             .set_title("Choose Local Directory")
             .pick_folder()
             .await;
+        if let Some(p) = &folder {
+            folder_access::remember(&app, p.path());
+        }
         Ok(folder.map(|p| p.path().to_string_lossy().to_string()))
     }
 }
@@ -27248,6 +27259,8 @@ pub fn run() {
             keep_app_data_out_of_backups(app.handle());
             let cloud_state = cloud::CloudState::new(&app.handle());
             app.manage(cloud_state);
+            // The Mac App Store build: the folders the user picked before.
+            folder_access::restore(app.handle());
             // The agent gateway: off unless this device's settings say on.
             #[cfg(desktop)]
             gateway::hub::setup(app.handle());
