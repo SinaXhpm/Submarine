@@ -112,11 +112,22 @@ pub(crate) async fn for_host(lookup: Lookup) -> Option<HostConfig> {
 /// instead when it's set, so the lab app can be tested against a config
 /// without one being written to the tester's real home.
 pub(crate) fn home_dir() -> Option<String> {
+    #[cfg(test)]
+    if let Some(home) = TEST_HOME.with(|h| h.borrow().clone()) {
+        return Some(home);
+    }
     #[cfg(debug_assertions)]
     if let Some(home) = std::env::var("SUBMARINE_LAB_HOME").ok().filter(|h| !h.is_empty()) {
         return Some(home);
     }
     Some(directories::UserDirs::new()?.home_dir().to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's own home folder, on its thread only: the tests run side by
+    /// side, and the environment is the whole process's.
+    pub(crate) static TEST_HOME: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Where the evaluation reads files and the environment from (the real

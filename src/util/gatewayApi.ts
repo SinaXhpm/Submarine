@@ -101,6 +101,8 @@ export interface GatewayOverview {
   requests: AgentRequest[];
   grants: AgentGrant[];
   cards: AgentCard[];
+  /** The app's id when it runs under Flatpak: agents start `flatpak run <id> mcp`. */
+  flatpak: string | null;
 }
 
 /** A row of the agents' log: a connection, a request, an answer, an end. */
@@ -157,11 +159,18 @@ export const minutesText = (m: number) => (m < 60 ? `${m} min` : m % 60 === 0 ? 
 /** The last part of a program's path: what most people know it by. */
 export const programName = (p: string) => p.split(/[\\/]/).pop() || p;
 
-/** The command that adds Submarine to Claude Code, and the block other agents take. */
-export const setupCommands = (program: string) => ({
-  claudeCode: `claude mcp add submarine -- "${program}" mcp`,
-  json: JSON.stringify({ mcpServers: { submarine: { command: program, args: ["mcp"] } } }, null, 2),
-});
+/** The command that adds Submarine to Claude Code, and the block other agents take.
+ *  Under Flatpak the program is only inside the app's sandbox: `flatpak run` starts it. */
+export const setupCommands = (program: string, flatpak: string | null) =>
+  flatpak
+    ? {
+        claudeCode: `claude mcp add submarine -- flatpak run ${flatpak} mcp`,
+        json: JSON.stringify({ mcpServers: { submarine: { command: "flatpak", args: ["run", flatpak, "mcp"] } } }, null, 2),
+      }
+    : {
+        claudeCode: `claude mcp add submarine -- "${program}" mcp`,
+        json: JSON.stringify({ mcpServers: { submarine: { command: program, args: ["mcp"] } } }, null, 2),
+      };
 
 export const gateway = {
   overview: () => invoke<GatewayOverview>("gateway_overview"),

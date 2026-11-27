@@ -64,10 +64,33 @@ pub fn own_program() -> Result<std::path::PathBuf, String> {
     std::fs::canonicalize(&exe).map_err(|e| format!("[GATEWAY] OWN_PATH: {e}"))
 }
 
+/// The file an agent starts to run this copy. Run from an AppImage, that is
+/// the AppImage: the program inside lives in a folder it is mounted on anew,
+/// under another name, each time it runs.
+pub fn launcher() -> Result<std::path::PathBuf, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(image) = std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()) {
+        return std::fs::canonicalize(image).map_err(|e| format!("[GATEWAY] OWN_PATH: {e}"));
+    }
+    own_program()
+}
+
 /// The endpoint of this user and this copy: a pipe name, or a socket path.
 pub fn endpoint() -> Result<String, String> {
-    let id = id_for(&imp::user()?, &own_program()?);
+    let id = id_for(&imp::user()?, &launcher()?);
     imp::named(&id)
+}
+
+/// The app's id when this copy runs under Flatpak. Each start is a sandbox
+/// of its own there, and the program file is only inside them: an agent
+/// starts `flatpak run <id> mcp`, and the socket is in a folder that every
+/// sandbox of the app shares. Only an id made of the characters Flatpak ids
+/// have: it is written into a command.
+pub fn flatpak_app() -> Option<String> {
+    if !cfg!(target_os = "linux") || !Path::new("/.flatpak-info").exists() {
+        return None;
+    }
+    std::env::var("FLATPAK_ID").ok().filter(|id| !id.is_empty() && id.len() <= 255 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')))
 }
 
 pub use imp::{connect, ClientStream, Listener};
@@ -335,28 +358,94 @@ mod imp {
         Ok(String::new())
     }
 
-    /// The socket's path: in the user's runtime folder where the system has
-    /// one (Linux), else in the temporary folder (per user on macOS), in a
-    /// folder of our own that only this user can enter. Kept short: a socket
-    /// path has room for about a hundred bytes.
+    /// What a socket's path may hold: its room is 104 bytes on macOS and 108
+    /// on Linux, with a NUL at the end.
+    const MAX_SOCKET_PATH: usize = 100;
+
+    /// The socket's path, in a folder of our own that only this user can
+    /// enter.
     pub fn named(id: &str) -> Result<String, String> {
-        let short = &id[..id.len().min(16)];
-        let dir = match std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|d| d.is_absolute()) {
-            Some(runtime) => runtime.join("submarine"),
-            None => {
-                // In a temporary folder that may be shared, the folder's name
-                // is this user's: made from the home folder's path.
-                let home = std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
-                let tag = super::id_for(&home, Path::new("agent-socket-folder"));
-                std::env::temp_dir().join(format!("submarine-{}", &tag[..8]))
-            }
-        };
-        let path = dir.join(format!("{short}.sock"));
-        let text = path.to_str().ok_or("[GATEWAY] SOCKET_PATH: not a path that can be written as text")?.to_string();
-        if text.len() > 100 {
-            return Err("[GATEWAY] SOCKET_PATH: too long for a socket".into());
+        socket_in(&folder(), id)
+    }
+
+    /// The socket's folder. The app and its bridge must arrive at the same
+    /// one, and an agent may start the bridge with little of the user's
+    /// environment (often only HOME, PATH, USER and the like), so it rests on
+    /// no more than that:
+    /// - Flatpak: the app's own folder in the home folder, the same in every
+    ///   sandbox of the app (each `flatpak run` is one, with a runtime folder
+    ///   of its own);
+    /// - macOS: the user's temporary folder as the system gives it, not as
+    ///   `TMPDIR` says (under the App Store's sandbox, the app's own one);
+    /// - Linux: the user's runtime folder `/run/user/<uid>`, whatever the
+    ///   environment says (WSLg names another one);
+    /// - without it, the runtime folder the environment names, if it is there;
+    /// - else the temporary folder, in a folder named for this user.
+    fn folder() -> PathBuf {
+        if let (Some(app), Some(home)) = (super::flatpak_app(), std::env::var_os("HOME").map(PathBuf::from).filter(|h| h.is_absolute())) {
+            return home.join(".var").join("app").join(app).join("agent");
         }
-        Ok(text)
+        #[cfg(target_os = "macos")]
+        if let Some(temp) = darwin_temp() {
+            return temp.join("submarine");
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(runtime) = user_runtime() {
+            return runtime.join("submarine");
+        }
+        #[cfg(not(target_os = "macos"))]
+        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|d| d.is_absolute() && d.is_dir()) {
+            return runtime.join("submarine");
+        }
+        // In a temporary folder that may be shared, the folder's name is
+        // this user's: made from the home folder's path.
+        let home = std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+        let tag = super::id_for(&home, Path::new("agent-socket-folder"));
+        std::env::temp_dir().join(format!("submarine-{}", &tag[..8]))
+    }
+
+    /// The socket in `dir`, named by the id. In a long folder (the App Store
+    /// sandbox's, a long home folder) the name is the id's first 8 digits,
+    /// still plenty to tell one user's copies apart.
+    pub(super) fn socket_in(dir: &Path, id: &str) -> Result<String, String> {
+        for digits in [16, 8] {
+            let path = dir.join(format!("{}.sock", &id[..id.len().min(digits)]));
+            let text = path.to_str().ok_or("[GATEWAY] SOCKET_PATH: not a path that can be written as text")?;
+            if text.len() <= MAX_SOCKET_PATH {
+                return Ok(text.to_string());
+            }
+        }
+        Err("[GATEWAY] SOCKET_PATH: too long for a socket".into())
+    }
+
+    /// The user's temporary folder as the system keeps it (`/var/folders/…/T/`;
+    /// under the App Store's sandbox, the app's own one in it). It doesn't
+    /// depend on what the agent passed on, as `TMPDIR` does, and the system
+    /// makes it if it isn't there.
+    #[cfg(target_os = "macos")]
+    fn darwin_temp() -> Option<PathBuf> {
+        use std::os::unix::ffi::OsStringExt;
+        let mut buf = vec![0u8; 1024];
+        // Safety: the buffer's length goes with it; confstr writes no more,
+        // a NUL included, and says how much room the whole value needs.
+        let n = unsafe { libc::confstr(libc::_CS_DARWIN_USER_TEMP_DIR, buf.as_mut_ptr().cast(), buf.len()) };
+        if n == 0 || n > buf.len() {
+            return None;
+        }
+        buf.truncate(n - 1);
+        let path = PathBuf::from(std::ffi::OsString::from_vec(buf));
+        path.is_absolute().then_some(path)
+    }
+
+    /// `/run/user/<uid>`, the runtime folder the system makes for a user who
+    /// is logged in, when it is there and this user's alone.
+    #[cfg(target_os = "linux")]
+    fn user_runtime() -> Option<PathBuf> {
+        // Safety: getuid has no preconditions and can't fail.
+        let uid = unsafe { libc::getuid() };
+        let dir = PathBuf::from(format!("/run/user/{uid}"));
+        let d = std::fs::symlink_metadata(&dir).ok()?;
+        (d.file_type().is_dir() && d.uid() == uid && d.mode() & 0o077 == 0).then_some(dir)
     }
 
     /// The folder is a real folder that nobody but its owner can enter. We
@@ -411,7 +500,9 @@ mod imp {
                 if cred.uid() != self.me {
                     continue;
                 }
-                let chain = match cred.pid().and_then(|p| u32::try_from(p).ok()) {
+                // No number (0) for a process in another process namespace,
+                // as one in another Flatpak sandbox is.
+                let chain = match cred.pid().and_then(|p| u32::try_from(p).ok()).filter(|&p| p != 0) {
                     Some(pid) => ancestry(pid),
                     None => Vec::new(),
                 };
@@ -465,6 +556,8 @@ mod imp {
                 break;
             }
             let program = std::fs::read_link(format!("/proc/{current}/exe")).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let environ = std::fs::read(format!("/proc/{current}/environ")).unwrap_or_default();
+            let program = appimage_of(&program, &environ).unwrap_or(program);
             chain.push(Proc { pid: current, program });
             child_started = Some(started);
             if parent <= 1 || parent == current {
@@ -490,6 +583,19 @@ mod imp {
         let parent = fields.get(1)?.parse().ok()?;
         let started = fields.get(19)?.parse().ok()?;
         Some((parent, started))
+    }
+
+    /// The AppImage a program runs from, by the process's environment
+    /// (`/proc/<pid>/environ`): the program inside lives in the folder the
+    /// image is mounted on (`APPDIR`), the image is `APPIMAGE`. A program
+    /// outside that folder only inherited the two, from a shell the app
+    /// started.
+    pub(super) fn appimage_of(program: &str, environ: &[u8]) -> Option<String> {
+        let value = |name: &[u8]| {
+            environ.split(|&b| b == 0).find_map(|pair| pair.strip_prefix(name)?.strip_prefix(b"=")).map(|v| String::from_utf8_lossy(v).into_owned()).filter(|v| Path::new(v).is_absolute())
+        };
+        let (image, dir) = (value(b"APPIMAGE")?, value(b"APPDIR")?);
+        Path::new(program).starts_with(&dir).then_some(image)
     }
 }
 
@@ -521,6 +627,38 @@ mod tests {
         assert_eq!(imp::parse_stat(tricky), Some((77, 55)));
         assert_eq!(imp::parse_stat("1234 (bash) S"), None);
         assert_eq!(imp::parse_stat("nothing here"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_in_an_appimage_is_named_by_the_image() {
+        let mount = "/tmp/.mount_SubmarAbc123";
+        let env = format!("HOME=/home/u\0APPDIR={mount}\0APPIMAGE=/home/u/Apps/Submarine.AppImage\0");
+        let inside = format!("{mount}/usr/bin/submarine");
+        assert_eq!(imp::appimage_of(&inside, env.as_bytes()).as_deref(), Some("/home/u/Apps/Submarine.AppImage"));
+        // A shell the app started inherits both, and stays itself.
+        assert_eq!(imp::appimage_of("/usr/bin/bash", env.as_bytes()), None);
+        // A folder whose name only begins the same is another one.
+        assert_eq!(imp::appimage_of(&format!("{mount}x/usr/bin/submarine"), env.as_bytes()), None);
+        assert_eq!(imp::appimage_of("", env.as_bytes()), None);
+        // Both are needed, as whole names, with whole paths.
+        assert_eq!(imp::appimage_of(&inside, format!("APPDIR={mount}\0").as_bytes()), None);
+        assert_eq!(imp::appimage_of(&inside, format!("XAPPDIR={mount}\0APPIMAGE=/a.AppImage\0").as_bytes()), None);
+        assert_eq!(imp::appimage_of(&inside, format!("APPDIR={mount}\0APPIMAGE=a.AppImage\0").as_bytes()), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_in_a_long_folder_gets_a_shorter_name() {
+        let id = id_for("", Path::new("/opt/submarine/submarine"));
+        let usual = imp::socket_in(Path::new("/run/user/1000/submarine"), &id).unwrap();
+        assert_eq!(usual, format!("/run/user/1000/submarine/{}.sock", &id[..16]));
+        // The temporary folder of an app in the App Store's sandbox.
+        let sandboxed = "/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/com.sinaxhpm.submarine/submarine";
+        let short = imp::socket_in(Path::new(sandboxed), &id).unwrap();
+        assert_eq!(short, format!("{sandboxed}/{}.sock", &id[..8]));
+        let far = format!("/{}", "x".repeat(95));
+        assert!(imp::socket_in(Path::new(&far), &id).unwrap_err().contains("SOCKET_PATH"));
     }
 
     #[cfg(windows)]

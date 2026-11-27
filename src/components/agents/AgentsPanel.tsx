@@ -497,7 +497,7 @@ const ConnectionBlock = ({ conn, grants, serverNames, onError }: { conn: AgentCo
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <Who conn={conn} />
-          <div className="text-[11px] text-zinc-600 mt-1">Connected at {timeText(conn.since)}{conn.bridged ? "" : " (not through submarine mcp)"}</div>
+          <div className="text-[11px] text-zinc-600 mt-1">Connected at {timeText(conn.since)}{conn.bridged || !conn.chain[0]?.program ? "" : " (not through submarine mcp)"}</div>
         </div>
         <button type="button" onClick={() => void act(gateway.disconnect(conn.id))} className="h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1 shrink-0">
           <Unplug size={12} /> Disconnect

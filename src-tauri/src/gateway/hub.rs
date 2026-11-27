@@ -50,6 +50,11 @@ const SWEEP_EVERY: Duration = Duration::from_secs(10);
 /// How long a closing profile or session waits for a stopped call to write
 /// what it did.
 const WIND_DOWN: Duration = Duration::from_secs(3);
+/// How soon a pipe name that was still taken is tried again: a copy of the
+/// app that is closing holds it a moment, as do this copy's own connections
+/// while they end.
+#[cfg(windows)]
+const RETRY_LISTEN: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -148,6 +153,9 @@ pub struct Hub {
     /// saved again.
     config_notice: StdMutex<Option<String>>,
     listening: StdMutex<Listening>,
+    /// Moves with each wait to try the pipe again: only the latest one tries.
+    #[cfg(windows)]
+    retry: std::sync::atomic::AtomicU64,
     /// How each connection is told to end.
     kicks: StdMutex<HashMap<u64, watch::Sender<bool>>>,
     /// What a standing grant acts through, by its id.
@@ -166,6 +174,8 @@ pub fn hub() -> &'static Arc<Hub> {
             config: StdMutex::new(Config::default()),
             config_notice: StdMutex::new(None),
             listening: StdMutex::new(Listening::Off),
+            #[cfg(windows)]
+            retry: std::sync::atomic::AtomicU64::new(0),
             kicks: StdMutex::new(HashMap::new()),
             live: StdMutex::new(HashMap::new()),
             cards: StdMutex::new(HashMap::new()),
@@ -261,7 +271,8 @@ pub struct Overview {
     pub error: Option<String>,
     pub longest_minutes: u32,
     pub profile_open: bool,
-    /// This program's own file: what an agent is told to start.
+    /// The file an agent is told to start: this program's own, or the
+    /// AppImage it runs from.
     pub program: String,
     /// The operations this version can grant.
     pub offered: Vec<Op>,
@@ -269,6 +280,9 @@ pub struct Overview {
     pub requests: Vec<RequestView>,
     pub grants: Vec<GrantView>,
     pub cards: Vec<CardView>,
+    /// The app's id when it runs under Flatpak: agents start
+    /// `flatpak run <id> mcp`, as the program file is only in its sandbox.
+    pub flatpak: Option<String>,
 }
 
 /// A call's progress, with whose it is.
@@ -284,7 +298,7 @@ struct CallEvent {
 /// The chain without Submarine's own bridge at its start, and whether it was
 /// there. Decided by the program's file, as the system gives it.
 fn asker(peer: &Peer) -> (Vec<Proc>, bool) {
-    let own = ipc::own_program().ok();
+    let own = ipc::launcher().ok();
     let is_own = |p: &Proc| {
         let Some(own) = &own else { return false };
         std::fs::canonicalize(&p.program).is_ok_and(|c| {
@@ -347,8 +361,35 @@ impl Hub {
         }
         *l = match ipc::endpoint().and_then(|name| ipc::Listener::open(&name)) {
             Ok(listener) => Listening::On(tokio::spawn(accept(self.clone(), listener))),
-            Err(e) => Listening::Failed(e),
+            Err(e) => {
+                #[cfg(windows)]
+                if e.contains("NAME_TAKEN") {
+                    self.try_again_later();
+                }
+                Listening::Failed(e)
+            }
         };
+    }
+
+    /// Tries the pipe again in a moment, and again after that while its name
+    /// is taken, as long as agent access stays on. Trying only asks Windows
+    /// for the name: no one else's pipe is opened.
+    #[cfg(windows)]
+    fn try_again_later(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        let ticket = self.retry.fetch_add(1, Ordering::SeqCst) + 1;
+        let hub = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RETRY_LISTEN).await;
+            let on = hub.config.lock().is_ok_and(|c| c.enabled);
+            if !on || hub.retry.load(Ordering::SeqCst) != ticket {
+                return;
+            }
+            hub.start();
+            if hub.listening.lock().is_ok_and(|l| matches!(*l, Listening::On(_))) {
+                hub.bump();
+            }
+        });
     }
 
     /// Stops listening and ends everything: connections, requests, grants.
@@ -820,12 +861,15 @@ impl Hub {
             error,
             longest_minutes: config.longest_minutes,
             profile_open: self.profile().is_some(),
-            program: ipc::own_program().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            // Without `\\?\` in front where Windows allows: it goes into the
+            // agents' settings.
+            program: ipc::launcher().map(|p| crate::display_path(&p)).unwrap_or_default(),
             offered: tools::OFFERED.to_vec(),
             connections,
             requests,
             grants,
             cards,
+            flatpak: ipc::flatpak_app(),
         }
     }
 }
@@ -966,12 +1010,35 @@ pub async fn gateway_configure(app: tauri::AppHandle, enabled: Option<bool>, lon
 
 struct ServerRow {
     session: String,
-    name: String,
-    host: String,
+    place: Place,
     proxy_host: Option<String>,
-    jump_host: Option<String>,
+    /// The server's own way there (a jump host, a SOCKS or HTTP proxy):
+    /// a connection then takes no `ProxyJump` from `~/.ssh/config`.
+    own_route: Option<&'static str>,
+    jump: Option<Place>,
     /// An FTP server (FTP, FTPS): files only.
     ftp: bool,
+}
+
+/// A saved server as `~/.ssh/config` is asked about it when connecting: its
+/// address, its name (an imported one keeps its alias) and the user it logs
+/// in as. The port doesn't change which blocks apply.
+struct Place {
+    name: String,
+    host: String,
+    user: String,
+}
+
+/// The columns `place_at` reads, from `servers s` and its login `c`.
+const PLACE_COLUMNS: &str = "s.name, s.host, s.auth_type, s.username, c.username";
+
+/// A `Place` from the `PLACE_COLUMNS` starting at column `at`. The user is
+/// the saved login's for a server that uses one, else the server's own, as
+/// when connecting.
+fn place_at(r: &rusqlite::Row, at: usize) -> rusqlite::Result<Place> {
+    let vault = r.get::<_, Option<String>>(at + 2)?.is_none_or(|a| a == "vault");
+    let user = if vault { r.get::<_, Option<String>>(at + 4)? } else { r.get::<_, Option<String>>(at + 3)? };
+    Ok(Place { name: r.get::<_, Option<String>>(at)?.unwrap_or_default(), host: r.get::<_, Option<String>>(at + 1)?.unwrap_or_default(), user: user.unwrap_or_default() })
 }
 
 /// The server the user picked, from the profile itself: it must exist and be
@@ -979,9 +1046,12 @@ struct ServerRow {
 fn server_row(db: &crate::DbState, uuid: &str) -> Result<ServerRow, String> {
     let conn = db.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
     let conn = conn.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-    let (id, name, host, protocol, proxy_host, jump): (i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>) = conn
-        .query_row("SELECT id, name, host, protocol, proxy_host, jump_host_id FROM servers WHERE uuid = ?1 AND COALESCE(deleted, 0) = 0", [uuid], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+    let sql = format!(
+        "SELECT s.id, s.protocol, s.proxy_type, s.proxy_host, s.jump_host_id, {PLACE_COLUMNS} FROM servers s LEFT JOIN credentials c ON s.credential_id = c.id WHERE s.uuid = ?1 AND COALESCE(s.deleted, 0) = 0"
+    );
+    let (id, protocol, proxy_type, proxy_host, jump, place) = conn
+        .query_row(&sql, [uuid], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<i64>>(4)?, place_at(r, 5)?))
         })
         .map_err(|_| "[GATEWAY] NO_SERVER: that server no longer exists".to_string())?;
     let protocol = protocol.unwrap_or_default().to_ascii_lowercase();
@@ -989,8 +1059,18 @@ fn server_row(db: &crate::DbState, uuid: &str) -> Result<ServerRow, String> {
     if !ftp && !protocol.is_empty() && protocol != "ssh" {
         return Err("[GATEWAY] NOT_SSH: agents can work on SSH and FTP servers only".into());
     }
-    let jump_host = jump.and_then(|j| conn.query_row("SELECT host FROM servers WHERE id = ?1", [j], |r| r.get::<_, Option<String>>(0)).ok().flatten());
-    Ok(ServerRow { session: format!("session-{id}"), name: name.unwrap_or_default(), host: host.unwrap_or_default(), proxy_host, jump_host, ftp })
+    let jump = jump.and_then(|j| {
+        let sql = format!("SELECT {PLACE_COLUMNS} FROM servers s LEFT JOIN credentials c ON s.credential_id = c.id WHERE s.id = ?1");
+        conn.query_row(&sql, [j], |r| place_at(r, 0)).ok()
+    });
+    // As the connection decides it.
+    let own_route = match (jump.is_some(), proxy_type.as_deref()) {
+        (true, _) => Some("jump host"),
+        (false, Some("socks5")) => Some("SOCKS5 proxy"),
+        (false, Some("http")) => Some("HTTP proxy"),
+        _ => None,
+    };
+    Ok(ServerRow { session: format!("session-{id}"), place, proxy_host, own_route, jump, ftp })
 }
 
 /// The folders the user gave a grant's file operations, resolved on the
@@ -1017,25 +1097,66 @@ async fn resolve_folders(fs: &crate::ai::files::Fs, folders: &[String]) -> Resul
     Ok(out)
 }
 
-/// What Submarine knows about where a server is: the host as saved, the
-/// addresses that name gives now, and the same for its proxy and jump host.
-async fn mask_for(row: &ServerRow) -> Mask {
-    let mut values: Vec<String> = vec![row.host.clone()];
-    values.extend(row.proxy_host.clone());
-    values.extend(row.jump_host.clone());
-    let mut found = Vec::new();
-    for name in &values {
-        let name = name.trim();
-        if name.is_empty() || name.parse::<std::net::IpAddr>().is_ok() {
-            continue;
-        }
-        // The addresses a host name stands for today. A lookup that fails
-        // or takes long adds nothing; the name itself is still hidden.
-        if let Ok(Ok(addresses)) = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((name, 22))).await {
-            found.extend(addresses.map(|a| a.ip().to_string()));
+/// The hosts `~/.ssh/config` sends a connection to `place` through: the
+/// address its alias stands for (`HostName`), and the hops of its
+/// `ProxyJump`, each as written and as its own config has it, the first
+/// hop's own `ProxyJump` too. As the connection takes them; nothing when the
+/// device doesn't read the config.
+async fn config_hosts(place: &Place, own_route: Option<&str>) -> Vec<String> {
+    let mut t = crate::ConfigTarget::resolve(&place.host, 22, &place.user, Some(place.name.clone())).await;
+    let mut hosts = vec![t.host.clone()];
+    let mut route = t.proxy(own_route);
+    let mut hops = 0;
+    while let Some(crate::ssh_config::Proxy::Jump(spec)) = route.take() {
+        let Ok(list) = crate::parse_proxy_jump(&spec) else { break };
+        for (i, hop) in list.into_iter().enumerate() {
+            hops += 1;
+            if hops > crate::MAX_JUMP_HOPS {
+                return hosts;
+            }
+            let mut h = crate::ConfigTarget::resolve(&hop.host, hop.port.unwrap_or(22), hop.user.as_deref().unwrap_or(""), None).await;
+            hosts.push(hop.host);
+            hosts.push(h.host.clone());
+            // Later hops are reached through the list, whatever their config says.
+            if i == 0 {
+                route = h.proxy(None);
+            }
         }
     }
-    values.extend(found);
+    hosts
+}
+
+/// What Submarine knows about where a server is: the host as saved, what
+/// `~/.ssh/config` makes of it, the addresses those names give now, and the
+/// same for its proxy and jump host.
+async fn mask_for(row: &ServerRow) -> Mask {
+    let mut values: Vec<String> = vec![row.place.host.clone()];
+    values.extend(row.proxy_host.clone());
+    if !row.ftp {
+        values.extend(config_hosts(&row.place, row.own_route).await);
+    }
+    if let Some(jump) = &row.jump {
+        values.push(jump.host.clone());
+        values.extend(config_hosts(jump, None).await);
+    }
+    let mut names: Vec<String> = values.iter().map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v.parse::<std::net::IpAddr>().is_err()).collect();
+    names.sort();
+    names.dedup();
+    // The addresses each host name stands for today, looked up side by side.
+    // A lookup that fails or takes long adds nothing; the name itself is
+    // still hidden.
+    let mut lookups = tokio::task::JoinSet::new();
+    for name in names {
+        lookups.spawn(async move { tokio::net::lookup_host((name.as_str(), 22)).await.map(|a| a.map(|a| a.ip().to_string()).collect::<Vec<_>>()) });
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(found) = lookups.join_next().await {
+            if let Ok(Ok(addresses)) = found {
+                values.extend(addresses);
+            }
+        }
+    })
+    .await;
     Mask::new(values.iter().map(String::as_str))
 }
 
@@ -1081,7 +1202,7 @@ pub async fn gateway_approve(
     ai::with_store(keys, |_| Ok(())).await?;
     let mask = mask_for(&row).await;
     let longest = hub.config.lock().map(|c| c.longest_minutes).unwrap_or(grant::DEFAULT_MINUTES);
-    let approval = Approval { server: server_uuid, session: row.session.clone(), server_name: row.name, server_host: row.host, label, ops, folders, ftp: row.ftp, mode, minutes, mask: mask.clone() };
+    let approval = Approval { server: server_uuid, session: row.session.clone(), server_name: row.place.name, server_host: row.place.host, label, ops, folders, ftp: row.ftp, mode, minutes, mask: mask.clone() };
     let (g, event) = {
         let mut s = hub.state.lock().map_err(|_| "[GATEWAY] LOCK")?;
         let g = s.approve(&request, approval, Now::read(), generation, longest)?;
@@ -1188,7 +1309,7 @@ mod tests {
 
     #[test]
     fn the_bridge_is_left_out_of_who_asks() {
-        let own = ipc::own_program().unwrap().to_string_lossy().into_owned();
+        let own = ipc::launcher().unwrap().to_string_lossy().into_owned();
         let agent = Proc { pid: 20, program: "/usr/bin/node".into() };
         let editor = Proc { pid: 10, program: "/usr/bin/code".into() };
         let through = Peer { chain: vec![Proc { pid: 30, program: own.clone() }, agent.clone(), editor.clone()] };
@@ -1201,5 +1322,26 @@ mod tests {
         assert_eq!(file_name("C:\\Program Files\\nodejs\\node.exe"), "node.exe");
         assert_eq!(file_name("/usr/bin/node"), "node");
         assert_eq!(file_name("node"), "node");
+    }
+
+    #[tokio::test]
+    async fn the_mask_knows_where_the_config_sends_a_connection() {
+        let home = std::env::temp_dir().join(format!("sub-gw-mask-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let config = "Host box\n  HostName 10.20.30.40\n  ProxyJump hop1,hop2\nHost hop1\n  HostName hop1.lan\n  ProxyJump gate\nHost gate\n  HostName 192.0.2.7\nHost hop2\n  HostName 198.51.100.9\n";
+        std::fs::write(home.join(".ssh").join("config"), config).unwrap();
+        crate::ssh_config::TEST_HOME.with(|h| *h.borrow_mut() = Some(home.to_string_lossy().into_owned()));
+        let place = Place { name: "box".into(), host: "box".into(), user: "me".into() };
+        let hosts = config_hosts(&place, None).await;
+        let own_route = config_hosts(&place, Some("jump host")).await;
+        crate::ssh_config::TEST_HOME.with(|h| *h.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&home);
+        // The alias's address, each hop as written and as its own config has
+        // it, and the first hop's own ProxyJump.
+        for want in ["10.20.30.40", "hop1", "hop1.lan", "gate", "192.0.2.7", "hop2", "198.51.100.9"] {
+            assert!(hosts.iter().any(|h| h == want), "{want} is missing from {hosts:?}");
+        }
+        // A server with its own way there doesn't go through the config's hops.
+        assert_eq!(own_route, ["10.20.30.40"]);
     }
 }
