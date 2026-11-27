@@ -929,7 +929,13 @@ const SettingsModal = ({ onClose, onSaved }: {
 const NumberRow = ({ label, hint, value, min, max, step, suffix, onChange }: {
   label: string; hint: string; value: number; min: number; max: number; step: number; suffix?: string;
   onChange: (v: number) => void;
-}) => (
+}) => {
+  // The box keeps what is typed. Clamped on each key, the "1" of "15" turned
+  // into the minimum 2 and "5" then made 25; a number out of range is
+  // clamped when the box is left.
+  const [text, setText] = useState(String(value));
+  useEffect(() => { setText(String(value)); }, [value]);
+  return (
   <div className="px-3 py-2 rounded bg-white/[0.03] border border-white/10">
     <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
@@ -940,11 +946,17 @@ const NumberRow = ({ label, hint, value, min, max, step, suffix, onChange }: {
         <input
           type="number"
           min={min} max={max} step={step}
-          value={value}
+          value={text}
           onChange={(e) => {
+            setText(e.target.value);
             const v = parseInt(e.target.value);
-            if (isNaN(v)) return;
-            onChange(Math.max(min, Math.min(max, v)));
+            if (v >= min && v <= max) onChange(v);
+          }}
+          onBlur={() => {
+            const v = parseInt(text);
+            const kept = isNaN(v) ? value : Math.max(min, Math.min(max, v));
+            setText(String(kept));
+            if (kept !== value) onChange(kept);
           }}
           className="w-20 h-8 px-2 bg-black/40 border border-white/10 rounded text-[12px] font-mono font-bold text-zinc-50 outline-none focus:border-primary/40 text-right"
         />
@@ -952,7 +964,8 @@ const NumberRow = ({ label, hint, value, min, max, step, suffix, onChange }: {
       </div>
     </div>
   </div>
-);
+  );
+};
 
 // ---------- ConfigureSlideover ----------------------------------------------
 

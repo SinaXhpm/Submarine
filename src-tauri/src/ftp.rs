@@ -1037,6 +1037,8 @@ pub struct Entry {
 
 /// Each line of a listing through `parse`, keeping only entries a folder can
 /// hold: no "." or "..", no name with a slash (a hostile server's "../x").
+/// One entry more than a listing may hold, as the shell backend reads, so the
+/// client refuses a folder over the limit rather than showing it cut short.
 fn listing(out: &[u8], parse: impl Fn(&str) -> Option<Entry>) -> Vec<Entry> {
     let mut entries = Vec::new();
     for raw in out.split(|b| *b == b'\n') {
@@ -1051,7 +1053,7 @@ fn listing(out: &[u8], parse: impl Fn(&str) -> Option<Entry>) -> Vec<Entry> {
                 entries.push(e);
             }
         }
-        if entries.len() as u64 >= crate::sftp_listing::MAX_ENTRIES {
+        if entries.len() as u64 > crate::sftp_listing::MAX_ENTRIES {
             break;
         }
     }
@@ -1554,6 +1556,13 @@ mod tests {
         let out = b"type=file;size=1; caf\xe9\r\ntype=file;size=1; caf\xc3\xa9\r\n";
         let e = listing(out, |l| parse_mlsx(l, false));
         assert_eq!(e.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), vec!["café"]);
+    }
+
+    #[test]
+    fn a_listing_over_the_limit_keeps_one_entry_more() {
+        let max = crate::sftp_listing::MAX_ENTRIES as usize;
+        let out: String = (0..max + 5).map(|k| format!("type=file;size=1; f{k}\r\n")).collect();
+        assert_eq!(listing(out.as_bytes(), |l| parse_mlsx(l, false)).len(), max + 1);
     }
 
     #[test]

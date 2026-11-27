@@ -71,8 +71,10 @@ pub fn keep(vault: &Path, now_unix: u64) -> Result<Option<String>, String> {
     if !vault.is_file() {
         return Ok(None);
     }
+    // The newest made before now: a copy dated ahead, made while the clock
+    // was ahead, would hold back every copy until the clock passed it.
     let have = existing(vault);
-    if have.last().is_some_and(|(when, _)| now_unix.saturating_sub(*when) < MIN_GAP_SECS) {
+    if have.iter().rfind(|(when, _)| *when <= now_unix).is_some_and(|(when, _)| now_unix - *when < MIN_GAP_SECS) {
         return Ok(None);
     }
     let name = format!("{}{now_unix:010}", stem(vault).ok_or("[BACKUP] NAME")?);
@@ -194,6 +196,21 @@ mod tests {
         assert_eq!(have.len(), 2);
         assert_eq!(fs::read(&have[0].1).unwrap(), b"all there", "the first copy is still the oldest");
         assert_eq!(fs::read(&have[1].1).unwrap(), b"one gone");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_copy_dated_ahead_doesnt_hold_the_next_ones_back() {
+        let dir = temp_dir("ahead");
+        let vault = dir.join("p.submarine");
+        fs::write(&vault, b"copied while the clock was an hour ahead").unwrap();
+        let now = 2_000_000_000u64;
+        assert!(keep(&vault, now + 3600).unwrap().is_some());
+        fs::write(&vault, b"the clock put right, then a deleting sync").unwrap();
+        assert!(keep(&vault, now).unwrap().is_some(), "the copy dated ahead doesn't count");
+        // The gap is kept from the copy made now.
+        assert_eq!(keep(&vault, now + 60).unwrap(), None);
+        assert_eq!(existing(&vault).len(), 2);
         let _ = fs::remove_dir_all(&dir);
     }
 

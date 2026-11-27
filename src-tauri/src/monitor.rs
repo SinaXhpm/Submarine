@@ -1646,30 +1646,29 @@ fn compute_sample(
 
 /// Pull the first numeric token (possibly with sign and decimal) out of any
 /// stdout. Tolerant: works for "42", "42.5", "load 1.2 1.0 0.9", "  3 ", etc.
+/// A token starts where a word does: the 0 of `eth0` and the dash of
+/// `vg-root 50` start none. One that isn't a number (`5.15.0`) is passed over.
 fn extract_number(s: &str) -> Option<f64> {
-    let mut chars = s.chars().peekable();
-    let mut buf = String::new();
-    let mut in_num = false;
-    while let Some(&c) = chars.peek() {
-        if !in_num {
-            if c == '-' || c == '+' || c.is_ascii_digit() {
-                in_num = true;
-                buf.push(c);
-                chars.next();
-                continue;
-            }
-            chars.next();
-        } else {
-            if c.is_ascii_digit() || c == '.' {
-                buf.push(c);
-                chars.next();
-            } else {
-                break;
-            }
+    let chars: Vec<char> = s.chars().collect();
+    let digit = |j: usize| chars.get(j).is_some_and(char::is_ascii_digit);
+    let mut i = 0;
+    while i < chars.len() {
+        let word_start = i == 0 || !chars[i - 1].is_alphanumeric();
+        // An optional sign, then a digit, or a point and a digit (bc's ".5").
+        let j = if matches!(chars[i], '-' | '+') { i + 1 } else { i };
+        if !(word_start && (digit(j) || (chars.get(j) == Some(&'.') && digit(j + 1)))) {
+            i += 1;
+            continue;
         }
+        let end = (j..chars.len()).find(|&k| !(chars[k].is_ascii_digit() || chars[k] == '.')).unwrap_or(chars.len());
+        let token: String = chars[i..end].iter().collect();
+        // A run of 400 digits parses as infinity.
+        if let Some(v) = token.parse::<f64>().ok().filter(|v| v.is_finite()) {
+            return Some(v);
+        }
+        i = end;
     }
-    // A run of 400 digits parses as infinity.
-    if buf.is_empty() { None } else { buf.parse::<f64>().ok().filter(|v| v.is_finite()) }
+    None
 }
 
 /// Apply a user-provided regex to the output and pull the first capture
@@ -1837,6 +1836,24 @@ mod probe_tests {
             assert!(apply_regex_number("(\\S+)", v).is_err(), "regex took {v}");
         }
         assert_eq!(apply_regex_number("(\\S+)", "1.5"), Ok(1.5));
+    }
+
+    #[test]
+    fn a_custom_number_is_the_first_token_that_is_one() {
+        for (out, want) in [
+            ("/dev/mapper/vg-root 50", 50.0),
+            ("cpu-temp: 54", 54.0),
+            ("eth0: 5", 5.0),
+            ("5.15.0 12", 12.0),
+            ("temp1: +45.0°C", 45.0),
+            ("x=-3.5", -3.5),
+            (".50", 0.5),
+            ("-.5", -0.5),
+            ("50%", 50.0),
+        ] {
+            assert_eq!(extract_number(out), Some(want), "{out}");
+        }
+        assert_eq!(extract_number("vg-root -"), None);
     }
 
     #[test]

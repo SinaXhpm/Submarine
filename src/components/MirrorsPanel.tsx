@@ -206,8 +206,8 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [sessionId]);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<MirrorStatus>(`mirror-update-${sessionId}`, (event) => {
+    // Unlistened through the promise: the panel can close before it settles.
+    const sub = listen<MirrorStatus>(`mirror-update-${sessionId}`, (event) => {
       const s = event.payload;
       if (!s || !s.id) return;
       setStatuses((prev) => {
@@ -233,13 +233,13 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       } else {
         setRunningByPair((prev) => ({ ...prev, [`${s.local}|${s.remote}`]: s.id }));
       }
-    }).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
+    });
+    return () => { sub.then((fn) => fn()); };
   }, [sessionId]);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<MirrorLogEntry>(`mirror-log-${sessionId}`, (event) => {
+    // Unlistened through the promise: the panel can close before it settles.
+    const sub = listen<MirrorLogEntry>(`mirror-log-${sessionId}`, (event) => {
       const entry = event.payload;
       if (!entry) return;
       setLogs((prev) => {
@@ -247,8 +247,8 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
         next.push(entry);
         return next;
       });
-    }).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
+    });
+    return () => { sub.then((fn) => fn()); };
   }, [sessionId]);
 
   useEffect(() => {

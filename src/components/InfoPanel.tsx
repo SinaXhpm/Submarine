@@ -1310,11 +1310,63 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
 // component state so re-collapsing / re-expanding is free.
 
 interface FirewallCardProps { sessionId: string; fw: FirewallData; }
+// One chain's rules (ssh_iptables_chain / ssh_nft_chain). `cut`: they went
+// past the 64 KB read, and end early.
+interface FwChainText { text: string; cut: boolean; }
 const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
   const t = useT();
   const [openChains, setOpenChains] = useState<Record<string, boolean>>({});
-  const [chainRules, setChainRules] = useState<Record<string, { loading: boolean; error: string | null; text: string | null }>>({});
+  const [chainRules, setChainRules] = useState<Record<string, { loading: boolean; error: string | null; text: string | null; cut?: boolean }>>({});
   const [filter, setFilter] = useState("");
+
+  // Composite key: chain names aren't globally unique across tables/families
+  // (e.g. FORWARD exists in both `filter` and `mangle`), so key by
+  // engine + fully-qualified location + name so expanded state doesn't
+  // spill between chains that share a display name.
+  const keyOf = (c: FwChainSummary) =>
+    fw.engine === "iptables" ? `ipt:${c.table}:${c.name}` : `nft:${c.family}:${c.table}:${c.name}`;
+
+  // Only DROP/REJECT chains auto-expand — those are actively blocking
+  // traffic so the operator likely wants to see rules immediately.
+  // Everything else stays collapsed to preserve the bandwidth win: no chain
+  // fetch until the user clicks.
+  const chainOpen = (c: FwChainSummary) =>
+    openChains[keyOf(c)] ?? ((c.policy === "DROP" || c.policy === "REJECT") && c.count > 0);
+
+  // The data the rules are for. A Refresh brings new data: the rules loaded
+  // for the old are dropped, and so is an answer still on its way.
+  const dataRef = useRef(fw);
+  useEffect(() => {
+    dataRef.current = fw;
+    setChainRules({});
+  }, [fw]);
+
+  const fetchChain = async (c: FwChainSummary) => {
+    const k = keyOf(c);
+    const existing = chainRules[k];
+    if (existing && (existing.loading || existing.text !== null)) return;
+    setChainRules(prev => ({ ...prev, [k]: { loading: true, error: null, text: null } }));
+    try {
+      const r = fw.engine === "iptables"
+        ? await invoke<FwChainText>("ssh_iptables_chain", { sessionId, table: c.table, chain: c.name })
+        : await invoke<FwChainText>("ssh_nft_chain", { sessionId, family: c.family, table: c.table, chain: c.name });
+      if (dataRef.current !== fw) return;
+      setChainRules(prev => ({ ...prev, [k]: { loading: false, error: null, text: r.text, cut: r.cut } }));
+    } catch (e: any) {
+      if (dataRef.current !== fw) return;
+      const msg = typeof e === "string" ? e : (e?.message || t("chain fetch failed"));
+      setChainRules(prev => ({ ...prev, [k]: { loading: false, error: msg, text: null } }));
+    }
+  };
+
+  // An open chain without its rules loads them as a click does: one open on
+  // its own, and one still open after a Refresh.
+  useEffect(() => {
+    if (fw.denied) return;
+    for (const c of fw.chains) {
+      if (c.count > 0 && chainOpen(c) && !chainRules[keyOf(c)]) fetchChain(c);
+    }
+  });
 
   if (fw.engine === "none") {
     return (
@@ -1419,29 +1471,6 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
     );
   }
 
-  // Composite key: chain names aren't globally unique across tables/families
-  // (e.g. FORWARD exists in both `filter` and `mangle`), so key by
-  // engine + fully-qualified location + name so expanded state doesn't
-  // spill between chains that share a display name.
-  const keyOf = (c: FwChainSummary) =>
-    fw.engine === "iptables" ? `ipt:${c.table}:${c.name}` : `nft:${c.family}:${c.table}:${c.name}`;
-
-  const fetchChain = async (c: FwChainSummary) => {
-    const k = keyOf(c);
-    const existing = chainRules[k];
-    if (existing && (existing.loading || existing.text !== null)) return;
-    setChainRules(prev => ({ ...prev, [k]: { loading: true, error: null, text: null } }));
-    try {
-      const text = fw.engine === "iptables"
-        ? await invoke<string>("ssh_iptables_chain", { sessionId, table: c.table, chain: c.name })
-        : await invoke<string>("ssh_nft_chain", { sessionId, family: c.family, table: c.table, chain: c.name });
-      setChainRules(prev => ({ ...prev, [k]: { loading: false, error: null, text } }));
-    } catch (e: any) {
-      const msg = typeof e === "string" ? e : (e?.message || t("chain fetch failed"));
-      setChainRules(prev => ({ ...prev, [k]: { loading: false, error: msg, text: null } }));
-    }
-  };
-
   const chains = fw.chains;
   const totalRules = chains.reduce((n, c) => n + c.count, 0);
   const needle = filter.trim().toLowerCase();
@@ -1473,13 +1502,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
         <div className="space-y-1.5">
           {visibleChains.map((c) => {
             const k = keyOf(c);
-            const explicitlyOpen = openChains[k];
-            // Only DROP/REJECT chains auto-expand — those are actively
-            // blocking traffic so the operator likely wants to see rules
-            // immediately. Everything else stays collapsed to preserve the
-            // bandwidth win: no chain fetch until the user clicks.
-            const isInteresting = c.policy === "DROP" || c.policy === "REJECT";
-            const open = explicitlyOpen !== undefined ? explicitlyOpen : (isInteresting && c.count > 0);
+            const open = chainOpen(c);
             const polTone = c.policy === "DROP" || c.policy === "REJECT" ? "red"
               : c.policy === "ACCEPT" ? "green" : "zinc";
             const detail = chainRules[k];
@@ -1517,6 +1540,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
                       <pre className="text-[10.5px] font-mono text-zinc-300 px-2.5 py-1.5 select-text whitespace-pre">
                         {detail.text.trim() || <span className="text-zinc-600 italic">{t("empty")}</span>}
                       </pre>
+                      {detail.cut && <div className="px-2.5 pb-1.5 text-[10px] text-amber-300">{t("Only the first 64 KB of this chain is shown.")}</div>}
                     </div>
                   ) : null
                 )}

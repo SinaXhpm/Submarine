@@ -471,6 +471,12 @@ pub fn keysym(key: &str) -> Option<u32> {
         "Meta" | "OS" => 0xffeb,
         "Alt" => 0xffe9,
         "AltGraph" => 0xfe03,
+        // The Japanese and Korean input keys.
+        "NonConvert" => 0xff22,
+        "Convert" => 0xff23,
+        "KanaMode" | "HiraganaKatakana" => 0xff27,
+        "HangulMode" => 0xff31,
+        "HanjaMode" => 0xff34,
         _ => {
             let n: u32 = key.strip_prefix('F')?.parse().ok().filter(|n| (1..=24).contains(n))?;
             0xffbe + n - 1
@@ -1085,6 +1091,9 @@ mod tests {
         assert_eq!(keysym("ArrowDown"), Some(0xff54));
         assert_eq!(keysym("F1"), Some(0xffbe));
         assert_eq!(keysym("F12"), Some(0xffc9));
+        assert_eq!(keysym("F24"), Some(0xffd5));
+        assert_eq!(keysym("Convert"), Some(0xff23));
+        assert_eq!(keysym("HangulMode"), Some(0xff31));
         assert_eq!(keysym("F25"), None);
         assert_eq!(keysym("Fn"), None);
         assert_eq!(keysym("Unidentified"), None);

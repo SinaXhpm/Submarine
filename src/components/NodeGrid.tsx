@@ -175,9 +175,12 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
     } catch { /* parent logs it; the input stays open for a retry */ }
   };
 
+  // One query for the name and the host: trimmed, as isSearching reads it,
+  // and in any case (a phone's keyboard capitalises the first letter).
+  const query = search.trim().toLowerCase();
   const filteredServers = servers?.filter((s: any) =>
-    s.name.toLowerCase().includes(search.toLowerCase()) ||
-    s.host.includes(search)
+    s.name.toLowerCase().includes(query) ||
+    s.host.toLowerCase().includes(query)
   ) || [];
 
   const currentFolder = folders?.find((f: any) => f.id === activeFolderId);
@@ -738,6 +741,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
         onChange={(e) => setRenaming({ id: f.id, draft: e.target.value })}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === "Enter") { e.preventDefault(); commitRename(); }
           if (e.key === "Escape") { e.preventDefault(); setRenaming(null); }
         }}
@@ -874,6 +878,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
         value={newFolder}
         onChange={(e) => setNewFolder(e.target.value)}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === "Enter") { e.preventDefault(); commitNewFolder(); }
           if (e.key === "Escape") { e.preventDefault(); setNewFolder(null); }
         }}
