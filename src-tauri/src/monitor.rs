@@ -202,7 +202,7 @@ pub struct Sample {
 // callers can build it from anywhere.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct NodeAuth {
     pub host: String,
     pub port: u16,
@@ -217,6 +217,28 @@ pub struct NodeAuth {
     pub proxy_type: String,
     pub proxy_host: Option<String>,
     pub proxy_port: Option<u16>,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub tailcat_address: Option<String>,
+}
+
+impl std::fmt::Debug for NodeAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeAuth")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[redacted]"))
+            .field("private_key", &self.private_key.as_ref().map(|_| "[redacted]"))
+            .field("passphrase", &self.passphrase.as_ref().map(|_| "[redacted]"))
+            .field("proxy_type", &self.proxy_type)
+            .field("proxy_host", &self.proxy_host)
+            .field("proxy_port", &self.proxy_port)
+            .field("transport", &self.transport)
+            .field("tailcat_address", &self.tailcat_address.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// A user-defined metric. The probe loop wraps each command in BEGIN/END
@@ -804,6 +826,28 @@ impl tokio::io::AsyncWrite for StreamBox {
 /// Same matrix as the interactive connect path, kept narrow to the three
 /// kinds we already support there.
 async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Box<dyn AsyncStream>, String> {
+    if auth.transport == "tailcat" {
+        if auth.proxy_type != "none" {
+            return Err("Tailcat connections cannot use a proxy".into());
+        }
+        #[cfg(feature = "tailcat-capi")]
+        {
+            let address = auth.tailcat_address.as_deref()
+                .filter(|value| value.trim().starts_with("tc"))
+                .ok_or("Tailcat address is missing or invalid")?;
+            let stream = tokio::time::timeout(
+                connect_timeout,
+                crate::tailcat_capi::open_tcp(address, auth.port),
+            )
+            .await
+            .map_err(|_| "Tailcat connection timed out".to_string())??;
+            return Ok(Box::new(stream));
+        }
+        #[cfg(not(feature = "tailcat-capi"))]
+        {
+            return Err("This Submarine build was not compiled with Tailcat support".into());
+        }
+    }
     match auth.proxy_type.as_str() {
         "socks5" => {
             let p_host = auth.proxy_host.as_deref().filter(|s| !s.is_empty())
@@ -2041,7 +2085,18 @@ mod login_tests {
             proxy_type: "none".into(),
             proxy_host: None,
             proxy_port: None,
+            transport: "direct".into(),
+            tailcat_address: None,
         }
+    }
+
+    #[test]
+    fn node_auth_debug_redacts_tailcat_address() {
+        let token = "tcCaseSensitive-secret";
+        let mut auth = node(None, None);
+        auth.transport = "tailcat".into();
+        auth.tailcat_address = Some(token.into());
+        assert!(!format!("{auth:?}").contains(token));
     }
 
     #[test]

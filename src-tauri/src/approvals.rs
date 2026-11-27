@@ -34,6 +34,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 
 use crate::tunnel::TunnelSpec;
 
@@ -88,7 +89,8 @@ pub fn create_schema(conn: &Connection) -> Result<(), String> {
            DELETE FROM held_approvals WHERE uuid = NEW.uuid AND item LIKE '{MOVED}%'
              AND (NEW.host IS NOT OLD.host OR NEW.port IS NOT OLD.port OR NEW.protocol IS NOT OLD.protocol
                   OR NEW.proxy_type IS NOT OLD.proxy_type OR NEW.proxy_host IS NOT OLD.proxy_host OR NEW.proxy_port IS NOT OLD.proxy_port
-                  OR NEW.jump_host_id IS NOT OLD.jump_host_id);
+                  OR NEW.jump_host_id IS NOT OLD.jump_host_id
+                  OR NEW.transport IS NOT OLD.transport OR NEW.tailcat_address IS NOT OLD.tailcat_address);
          END;
          CREATE TRIGGER servers_held_ad AFTER DELETE ON servers FOR EACH ROW WHEN OLD.uuid IS NOT NULL
          BEGIN DELETE FROM held_approvals WHERE uuid = OLD.uuid; END;
@@ -145,11 +147,13 @@ pub enum Snapshot {
 
 /// Where a server's connections go: what a move changes. `jump` is the jump
 /// host's uuid, `proxy` is empty with no proxy.
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Target {
     protocol: String,
+    transport: String,
     host: String,
     port: i64,
+    tailcat_address_hash: Option<[u8; 32]>,
     proxy: String,
     jump: Option<String>,
 }
@@ -157,6 +161,10 @@ pub struct Target {
 impl Target {
     /// In words, as the review shows it.
     fn words(&self, conn: &Connection) -> String {
+        if self.transport == "tailcat" {
+            let address = self.tailcat_address_hash.as_ref().map(|hash| hex::encode(hash)).unwrap_or_else(|| "missing".into());
+            return format!("Tailcat endpoint {address}:{}", self.port);
+        }
         let mut out = format!("{}:{}", self.host, self.port);
         if self.protocol != "ssh" {
             out += &format!(" ({})", self.protocol.to_uppercase());
@@ -174,7 +182,7 @@ impl Target {
 
 fn target(conn: &Connection, uuid: &str) -> Option<Target> {
     conn.query_row(
-        "SELECT COALESCE(s.protocol, 'ssh'), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.proxy_type, 'none'), COALESCE(s.proxy_host, ''), COALESCE(s.proxy_port, 0), j.uuid
+        "SELECT COALESCE(s.protocol, 'ssh'), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.proxy_type, 'none'), COALESCE(s.proxy_host, ''), COALESCE(s.proxy_port, 0), j.uuid, COALESCE(s.transport, 'direct'), s.tailcat_address
            FROM servers s LEFT JOIN servers j ON j.id = s.jump_host_id WHERE s.uuid = ?1",
         [uuid],
         |r| {
@@ -185,6 +193,8 @@ fn target(conn: &Connection, uuid: &str) -> Option<Target> {
                 port: r.get(2)?,
                 proxy: if kind.is_empty() || kind == "none" { String::new() } else { format!("{kind} {host}:{port}") },
                 jump: r.get(6)?,
+                transport: r.get(7)?,
+                tailcat_address_hash: r.get::<_, Option<String>>(8)?.map(|address| Sha256::digest(address.as_bytes()).into()),
             })
         },
     )
@@ -691,7 +701,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, host TEXT, port INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, autostart INTEGER NOT NULL DEFAULT 0,
-                                  run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, auto_open INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT);
+                                  run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, auto_open INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, transport TEXT, tailcat_address TEXT, uuid TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER NOT NULL DEFAULT 1, uuid TEXT);
              CREATE TABLE known_hosts(id INTEGER PRIMARY KEY, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
              CREATE TABLE sync_flags(key TEXT PRIMARY KEY, val INTEGER NOT NULL);
@@ -830,7 +840,7 @@ mod tests {
         let old = Connection::open_in_memory().unwrap();
         old.execute_batch(
             "CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, host TEXT, port INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, autostart INTEGER NOT NULL DEFAULT 0,
-                                  run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, protocol TEXT, uuid TEXT);
+                                  run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, protocol TEXT, transport TEXT, tailcat_address TEXT, uuid TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, custom_metrics TEXT, uuid TEXT);
              CREATE TABLE sync_flags(key TEXT PRIMARY KEY, val INTEGER NOT NULL);",
         )
@@ -1022,6 +1032,20 @@ mod tests {
             assert!(held_for(&conn, "u1").contains("moved:old.example:22"), "{set}");
             assert_eq!(target_words(&conn, "u1").as_deref(), Some(now), "{set}");
         }
+    }
+
+    #[test]
+    fn changing_tailcat_address_is_a_new_approval_target_without_exposing_it() {
+        let conn = with_allowed_server();
+        conn.execute("UPDATE servers SET transport='tailcat', tailcat_address='tcSecretOne', host='tailcat.invalid' WHERE uuid='u1'", []).unwrap();
+        let first = target(&conn, "u1").unwrap();
+        let description = first.words(&conn);
+        assert!(!description.contains("tcSecretOne"));
+        merge_set(&conn, "u1", "tailcat_address='tcSecretTwo'");
+        let second = target(&conn, "u1").unwrap();
+        assert_ne!(first, second, "the encrypted address capability is part of the target identity");
+        assert_ne!(description, second.words(&conn));
+        assert!(held_for(&conn, "u1").iter().any(|item| item.starts_with("moved:Tailcat endpoint ")));
     }
 
     #[test]

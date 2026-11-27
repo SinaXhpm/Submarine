@@ -58,6 +58,8 @@ mod vault_backup;
 mod folder_copy;
 mod ai;
 mod gateway;
+#[cfg(feature = "tailcat-capi")]
+mod tailcat_capi;
 #[cfg(target_os = "android")]
 mod android_bridge;
 #[cfg(test)]
@@ -902,7 +904,7 @@ mod sync_trigger_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
-             CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, transport TEXT, tailcat_address TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE commands(id INTEGER PRIMARY KEY, title TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY, title TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);",
@@ -1021,7 +1023,7 @@ const ENTITIES: &[EntitySpec] = &[
     EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false }] },
     EntitySpec {
         table: "servers",
-        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "auto_open", "mirrors", "color", "notes", "run_on_connect", "run_on_connect_every", "protocol", "position", "edited_by"],
+        cols: &["name", "host", "port", "username", "password", "transport", "tailcat_address", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "auto_open", "mirrors", "color", "notes", "run_on_connect", "run_on_connect_every", "protocol", "position", "edited_by"],
         fks: &[
             Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials", required: false },
             Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders", required: false },
@@ -1231,7 +1233,8 @@ fn sane_record(rec: &SyncRecord) -> bool {
 fn secret_cols(table: &str) -> &'static [&'static str] {
     match table {
         "ssh_keys" => &["private_key", "passphrase"],
-        "credentials" | "servers" => &["password"],
+        "credentials" => &["password"],
+        "servers" => &["password", "tailcat_address"],
         _ => &[],
     }
 }
@@ -1271,6 +1274,7 @@ fn emptied_cols(table: &str, here: &[Option<String>], obj: &serde_json::Map<Stri
             had.as_deref().is_some_and(is_filled)
                 && !new_key(col)
                 && match obj.get(**col) {
+                    None if **col == "tailcat_address" => false,
                     None | Some(Value::Null) => true,
                     Some(Value::String(s)) => !is_filled(s),
                     Some(_) => false,
@@ -1520,6 +1524,10 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // the node back into an SSH server here, so the local value is kept. A
     // newer peer always sends the key, NULL for an SSH server.
     let preserve_local_protocol = spec.table == "servers" && !obj.contains_key("protocol");
+    // Older Submarine versions omit the Tailcat fields. Keep the local transport
+    // and its secret when such a peer edits an otherwise known server.
+    let mut preserve_local_transport = spec.table == "servers" && !obj.contains_key("transport");
+    let preserve_local_tailcat_address = spec.table == "servers" && !obj.contains_key("tailcat_address");
     // And for a server's `run_on_connect_every` (#256): a peer from before it
     // would otherwise turn it off whenever it edits the server.
     let preserve_local_every = spec.table == "servers" && !obj.contains_key("run_on_connect_every");
@@ -1551,6 +1559,11 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
         if *c == "position" && matches!(val, None | Some(serde_json::Value::Null)) {
             params.push(Box::new(0i64));
             preserve_local_position = true;
+        } else if *c == "transport" && matches!(val, None | Some(serde_json::Value::Null)) {
+            // Older peers don't know this column; use a safe INSERT default
+            // while preserving a newer local Tailcat setting on UPDATE.
+            params.push(Box::new("direct".to_string()));
+            preserve_local_transport = true;
         } else {
             params.push(json_to_sql(val));
         }
@@ -1619,6 +1632,10 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 format!("position={}.position", spec.table)
             } else if c.as_str() == "protocol" && preserve_local_protocol {
                 format!("protocol={}.protocol", spec.table)
+            } else if c.as_str() == "transport" && preserve_local_transport {
+                format!("transport={}.transport", spec.table)
+            } else if c.as_str() == "tailcat_address" && preserve_local_tailcat_address {
+                format!("tailcat_address={}.tailcat_address", spec.table)
             } else if c.as_str() == "run_on_connect_every" && preserve_local_every {
                 format!("run_on_connect_every={}.run_on_connect_every", spec.table)
             } else if c.as_str() == "auto_open" && preserve_local_auto_open {
@@ -4288,7 +4305,7 @@ mod sync_engine_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, auto_open INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, transport TEXT, tailcat_address TEXT, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, auto_open INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER, tags TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
@@ -5527,7 +5544,7 @@ mod sync_engine_tests {
         let (a, _ha) = device("A");
         a.execute("INSERT INTO ssh_keys(name,public_key,private_key,passphrase) VALUES('k','pub','priv','phrase')", []).unwrap();
         a.execute("INSERT INTO credentials(name,auth_type,username,password) VALUES('c','password','root','pw')", []).unwrap();
-        a.execute("INSERT INTO servers(name,host,port,password) VALUES('s','h',22,'pw2')", []).unwrap();
+        a.execute("INSERT INTO servers(name,host,port,password,transport,tailcat_address) VALUES('s','tailcat',22,'pw2','tailcat','tcSecretCase')", []).unwrap();
         let recs = collect_local_records(&a, &KEY, "").unwrap();
         assert_eq!(apply_remote_records(c, &KEY, &recs, h).unwrap(), 0);
         recs
@@ -5563,6 +5580,9 @@ mod sync_engine_tests {
         assert!(empties(&reworked(key, |o| { o.remove("private_key"); })), "a record without it writes NULL");
         assert!(empties(&with_field(of(&recs, "credentials"), "password", json!(""))));
         assert!(empties(&with_field(of(&recs, "servers"), "password", json!(""))));
+        let tailcat = of(&recs, "servers");
+        assert!(empties(&with_field(tailcat, "tailcat_address", json!(""))), "a Tailcat capability is protected as a secret");
+        assert!(!empties(&reworked(tailcat, |obj| { obj.remove("tailcat_address"); })), "an older peer that omits this field is not clearing the capability");
 
         assert!(!empties(&with_field(key, "private_key", json!("another key"))), "a secret replaced is an edit");
         let new_key = |c: &str, passphrase: serde_json::Value| {
@@ -5575,7 +5595,8 @@ mod sync_engine_tests {
         assert!(empties(&new_key("", json!(""))), "no key at all is what it looks like");
         assert!(empties(&new_key(" ", json!(null))), "and so are spaces");
         assert!(!empties(&with_field(key, "name", json!("renamed"))));
-        assert!(!empties(&with_field(of(&recs, "servers"), "host", json!("h2"))));
+        assert!(!empties(&with_field(tailcat, "host", json!("h2"))));
+        assert!(!empties(&with_field(tailcat, "tailcat_address", json!("tcReplacement"))), "a rotated capability is an edit");
 
         // It doesn't land: older than what's here, no such row, can't be read.
         let mut older = with_field(key, "private_key", json!(""));
@@ -6073,6 +6094,35 @@ mod sync_engine_tests {
         let (proxy, auto): (i64, i64) =
             b.query_row("SELECT proxy_port, autostart FROM servers", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((proxy, auto), (1080, 1));
+    }
+
+    // A pre-Tailcat peer can update other profile fields without erasing the
+    // local Tailcat transport or its encrypted address.
+    #[test]
+    fn old_peer_update_preserves_local_tailcat_settings() {
+        let (a, _ha) = device("A");
+        a.execute(
+            "INSERT INTO servers(name,host,port,transport,tailcat_address) VALUES('nas','tailcat.invalid',22,'tailcat','tcSecretCase')",
+            [],
+        ).unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &seed, &hb).unwrap();
+        let server = live(&seed, "servers");
+        let from_old_peer = reworked(server, |obj| {
+            obj.remove("transport");
+            obj.remove("tailcat_address");
+            obj.insert("notes".into(), "changed by old peer".into());
+        });
+        apply_remote_records(&b, &KEY, &[from_old_peer], &hb).unwrap();
+        let (transport, address, notes): (String, Option<String>, String) = b.query_row(
+            "SELECT transport, tailcat_address, notes FROM servers WHERE name='nas'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(transport, "tailcat");
+        assert_eq!(address.as_deref(), Some("tcSecretCase"));
+        assert_eq!(notes, "changed by old peer");
     }
 
     // A record's links are set after the whole batch, so they used to be set
@@ -7650,6 +7700,11 @@ async fn setup_master_db_inner(
             // server. Nullable + additive like jump_host_id: an older binary
             // ignores it (and shows an RDP node as an SSH server).
             "ALTER TABLE servers ADD COLUMN protocol TEXT",
+            // Tailcat selects the underlying application transport independently
+            // of the SSH/FTP/RDP protocol. Its address is a secret capability.
+            "ALTER TABLE servers ADD COLUMN transport TEXT",
+            "ALTER TABLE servers ADD COLUMN tailcat_address TEXT",
+            "UPDATE servers SET host='tailcat.invalid' WHERE transport='tailcat' AND host='tailcat'",
             // Per-algorithm host-key tracking. Legacy rows keep key_type NULL
             // (treated conservatively as "same type" so a real key rotation is
             // never downgraded to a benign first-time prompt); rows recorded
@@ -7756,7 +7811,7 @@ async fn setup_master_db_inner(
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, auto_open INTEGER, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, transport TEXT, tailcat_address TEXT, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, auto_open INTEGER, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER, tags TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
@@ -8492,8 +8547,17 @@ async fn add_server(
     mirrors: Option<Vec<serde_json::Value>>,
     color: Option<String>,
     persist: Option<bool>,
+    transport: Option<String>,
+    tailcat_address: Option<String>,
 ) -> Result<i64, String> {
     check_server_port(port)?;
+    let (transport, tailcat_address) = normalize_transport(transport, tailcat_address)?;
+    let host = if transport == "tailcat" { TAILCAT_HOST.to_string() } else { host };
+    let (proxy_type, proxy_host, proxy_port) = if transport == "tailcat" {
+        ("none".to_string(), String::new(), 1080)
+    } else {
+        (proxy_type, proxy_host, proxy_port)
+    };
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
 
@@ -8512,8 +8576,8 @@ async fn add_server(
 
     let autostart_i: i32 = if autostart.unwrap_or(false) { 1 } else { 0 };
     let res = conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color],
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, transport, tailcat_address, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, transport, tailcat_address, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color],
     ).map_err(|e| format!("[DATABASE] SERVER_INSERT_FAILED: SQL_ERROR={}", e))?;
 
     if res == 0 {
@@ -8563,6 +8627,14 @@ async fn save_quick_connect_node(
         Some(p @ ("ftp" | "ftps" | "ftps-implicit")) => Some(p),
         Some(other) => return Err(format!("[DATABASE] SERVER_PROTOCOL_UNKNOWN: {other}")),
     };
+    let (transport, tailcat_address) = normalize_transport(
+        auth.transport.clone(),
+        auth.tailcat_address.clone(),
+    )?;
+    if transport == "tailcat" && protocol.is_some() {
+        return Err("Tailcat transport is only supported for SSH servers".into());
+    }
+    let stored_host = if transport == "tailcat" { TAILCAT_HOST } else { auth.host.as_str() };
     if protocol.is_some() && auth.private_key.as_ref().is_some_and(|k| !k.trim().is_empty()) {
         return Err("An FTP server logs in with a password, not an SSH key".into());
     }
@@ -8574,8 +8646,8 @@ async fn save_quick_connect_node(
     // the grid doesn't fill with duplicates on repeated quick connects. The
     // kind is part of it: an FTP quick connect never reuses an SSH node.
     let existing = conn.query_row(
-        "SELECT id FROM servers WHERE deleted = 0 AND folder_id IS NULL AND host = ?1 AND port = ?2 AND COALESCE(username,'') = ?3 AND COALESCE(protocol,'ssh') = ?4 LIMIT 1",
-        rusqlite::params![auth.host, auth.port, username, protocol.unwrap_or("ssh")],
+        "SELECT id FROM servers WHERE deleted = 0 AND folder_id IS NULL AND host = ?1 AND port = ?2 AND COALESCE(username,'') = ?3 AND COALESCE(protocol,'ssh') = ?4 AND COALESCE(transport,'direct') = ?5 AND (COALESCE(transport,'direct') != 'tailcat' OR tailcat_address = ?6) LIMIT 1",
+        rusqlite::params![stored_host, auth.port, username, protocol.unwrap_or("ssh"), transport, tailcat_address],
         |r| r.get::<_, i64>(0),
     );
     match existing {
@@ -8585,9 +8657,9 @@ async fn save_quick_connect_node(
     }
 
     let name = if username.is_empty() {
-        auth.host.clone()
+        stored_host.to_string()
     } else {
-        format!("{}@{}", username, auth.host)
+        format!("{}@{}", username, stored_host)
     };
 
     // A private key wins over a password if both somehow arrived.
@@ -8604,9 +8676,9 @@ async fn save_quick_connect_node(
         };
 
     conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, protocol) \
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 'none', '', 1080, '[]', ?6, ?7, 0, '[]', NULL, ?8)",
-        rusqlite::params![name, auth.host, auth.port, username, db_password, auth_type, db_key_id, protocol],
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, transport, tailcat_address, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, protocol) \
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, 'none', '', 1080, '[]', ?8, ?9, 0, '[]', NULL, ?10)",
+        rusqlite::params![name, stored_host, auth.port, username, db_password, transport, tailcat_address, auth_type, db_key_id, protocol],
     ).map_err(|e| format!("[DATABASE] QUICK_NODE_INSERT_FAILED: {}", e))?;
 
     let new_id = conn.last_insert_rowid();
@@ -8651,8 +8723,26 @@ async fn edit_server(
     // COALESCE(?, password) so the existing column survives.
     preserve_password: Option<bool>,
     persist: Option<bool>,
+    transport: Option<String>,
+    tailcat_address: Option<String>,
 ) -> Result<(), String> {
     check_server_port(port)?;
+    let (transport, tailcat_address) = normalize_transport(transport, tailcat_address)?;
+    if transport == "tailcat" {
+        let existing_protocol: Option<String> = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?
+            .as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?
+            .query_row("SELECT protocol FROM servers WHERE id=?1", [id], |row| row.get(0))
+            .map_err(|e| format!("[DATABASE] SERVER_PROTOCOL_FAILED: {e}"))?;
+        if existing_protocol.as_deref().is_some_and(|value| value != "ssh") {
+            return Err("Tailcat transport is only supported for SSH servers".into());
+        }
+    }
+    let host = if transport == "tailcat" { TAILCAT_HOST.to_string() } else { host };
+    let (proxy_type, proxy_host, proxy_port) = if transport == "tailcat" {
+        ("none".to_string(), String::new(), 1080)
+    } else {
+        (proxy_type, proxy_host, proxy_port)
+    };
     let tunnels_json = serde_json::to_string(&tunnels).unwrap_or_else(|_| "[]".to_string());
     let mirrors_json = mirrors.as_ref()
         .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".into()))
@@ -8693,13 +8783,13 @@ async fn edit_server(
         // because normalize_server_identity zeros password for the other modes.
         if preserve_password.unwrap_or(false) && auth_type == "custom_pass" {
             conn.execute(
-                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=COALESCE(?5, password), credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
-                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
+                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=COALESCE(?5, password), credential_id=?6, folder_id=?7, transport=?8, tailcat_address=?9, proxy_type=?10, proxy_host=?11, proxy_port=?12, tunnels=?13, auth_type=?14, key_id=?15, autostart=?16, mirrors=?17, color=?18, jump_host_id=CASE WHEN ?8='tailcat' THEN NULL ELSE jump_host_id END WHERE id=?19",
+                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, transport, tailcat_address, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
             ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
         } else {
             conn.execute(
-                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
-                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
+                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, transport=?8, tailcat_address=?9, proxy_type=?10, proxy_host=?11, proxy_port=?12, tunnels=?13, auth_type=?14, key_id=?15, autostart=?16, mirrors=?17, color=?18, jump_host_id=CASE WHEN ?8='tailcat' THEN NULL ELSE jump_host_id END WHERE id=?19",
+                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, transport, tailcat_address, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
             ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
         }
 
@@ -8951,6 +9041,17 @@ async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, va
 async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: Option<i32>, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    if let Some(jump_id) = value {
+        let transports: (String, String) = conn.query_row(
+            "SELECT COALESCE(source.transport, 'direct'), COALESCE(jump.transport, 'direct')
+             FROM servers source JOIN servers jump ON jump.id=?1 WHERE source.id=?2",
+            rusqlite::params![jump_id, id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(|e| format!("[DATABASE] SERVER_JUMP_HOST_FAILED: {e}"))?;
+        if transports.0 == "tailcat" || transports.1 == "tailcat" {
+            return Err("Tailcat transport cannot be used with ProxyJump".into());
+        }
+    }
     conn.execute(
         "UPDATE servers SET jump_host_id=?1 WHERE id=?2",
         rusqlite::params![value, id],
@@ -8958,6 +9059,92 @@ async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: 
     drop(conn_guard);
     save_unless_batched(&state, persist)?;
     Ok(())
+}
+
+const TAILCAT_HOST: &str = "tailcat.invalid";
+
+fn normalize_transport(
+    transport: Option<String>,
+    tailcat_address: Option<String>,
+) -> Result<(String, Option<String>), String> {
+    let transport = transport.unwrap_or_else(|| "direct".into()).trim().to_ascii_lowercase();
+    match transport.as_str() {
+        "direct" => Ok((transport, None)),
+        "tailcat" => {
+            let address = tailcat_address.unwrap_or_default().trim().to_string();
+            if !address.starts_with("tc") {
+                return Err("Tailcat address must start with tc".into());
+            }
+            Ok((transport, Some(address)))
+        }
+        _ => Err("Unsupported connection transport".into()),
+    }
+}
+
+#[cfg(test)]
+mod tailcat_transport_tests {
+    use super::*;
+
+    #[test]
+    fn direct_transport_clears_tailcat_secret() {
+        assert_eq!(
+            normalize_transport(Some("direct".into()), Some("tc-secret".into())).unwrap(),
+            ("direct".into(), None),
+        );
+    }
+
+    #[test]
+    fn tailcat_transport_rejects_invalid_address() {
+        assert!(normalize_transport(Some("tailcat".into()), Some("not-a-token".into())).is_err());
+    }
+
+    #[test]
+    fn quick_auth_debug_redacts_capability_and_credentials() {
+        let token = "tcCaseSensitive-secret";
+        let auth = QuickAuth {
+            host: TAILCAT_HOST.into(),
+            port: 22,
+            username: "user".into(),
+            password: Some("password-secret".into()),
+            private_key: None,
+            passphrase: None,
+            protocol: None,
+            transport: Some("tailcat".into()),
+            tailcat_address: Some(token.into()),
+        };
+        let debug = format!("{auth:?}");
+        assert!(!debug.contains(token));
+        assert!(!debug.contains("password-secret"));
+    }
+
+    #[test]
+    fn tailcat_transport_preserves_address_case() {
+        let address = "tcAbC_secret";
+        assert_eq!(
+            normalize_transport(Some("tailcat".into()), Some(address.into())).unwrap(),
+            ("tailcat".into(), Some(address.into())),
+        );
+    }
+}
+
+#[tauri::command]
+fn tailcat_available() -> bool {
+    cfg!(feature = "tailcat-capi")
+}
+
+#[tauri::command]
+async fn reveal_server_tailcat_address(
+    state: tauri::State<'_, DbState>,
+    id: i32,
+) -> Result<Option<String>, String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.query_row(
+        "SELECT tailcat_address FROM servers WHERE id=?1 AND COALESCE(transport, 'direct')='tailcat'",
+        [id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("[DATABASE] SERVER_TAILCAT_REVEAL_FAILED: {e}"))
 }
 
 /// What a node is that isn't an SSH server, for messages: "an RDP" (issue #3)
@@ -8992,6 +9179,16 @@ async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: O
     };
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    if value.is_some() {
+        let transport: String = conn.query_row(
+            "SELECT COALESCE(transport, 'direct') FROM servers WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        ).map_err(|e| format!("[DATABASE] SERVER_PROTOCOL_FAILED: {e}"))?;
+        if transport == "tailcat" {
+            return Err("Tailcat transport is only supported for SSH servers".into());
+        }
+    }
     let changed = conn.execute(
         "UPDATE servers SET protocol=?1 WHERE id=?2 AND protocol IS NOT ?1",
         rusqlite::params![value, id],
@@ -9013,8 +9210,8 @@ async fn clone_server(state: tauri::State<'_, DbState>, id: i32) -> Result<i64, 
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     let affected = conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, run_on_connect_every, jump_host_id, protocol)
-         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, run_on_connect_every, jump_host_id, protocol
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, transport, tailcat_address, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, run_on_connect_every, jump_host_id, protocol)
+         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, transport, tailcat_address, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, run_on_connect_every, jump_host_id, protocol
          FROM servers WHERE id = ?1",
         rusqlite::params![id],
     ).map_err(|e| format!("[DATABASE] SERVER_CLONE_FAILED: {}", e))?;
@@ -9079,7 +9276,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // ORDER BY (position, id): `position` is the manual drag-to-reorder rank
     // (default 0 for never-reordered rows), and id breaks ties so the order is
     // stable and, before any reorder, identical to the old rowid order.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol, run_on_connect_every, auto_open FROM servers ORDER BY position, id")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol, run_on_connect_every, auto_open, transport, tailcat_address FROM servers ORDER BY position, id")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -9130,6 +9327,8 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
                 Some("ftps-implicit") => "ftps-implicit",
                 _ => "ssh",
             },
+            "transport": row.get::<_, Option<String>>(27)?.unwrap_or_else(|| "direct".into()),
+            "has_tailcat_address": row.get::<_, Option<String>>(28)?.as_deref().is_some_and(|s| !s.is_empty()),
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -10136,7 +10335,7 @@ async fn get_notes(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::V
 /// that the connection flow actually needs: address, identity, and either
 /// a password or a PEM key body. Proxy + tunnel auto-start are deliberately
 /// omitted; the user can save a real node if they need those.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 struct QuickAuth {
     host: String,
     port: i32,
@@ -10152,6 +10351,26 @@ struct QuickAuth {
     /// saved server (`ftp_connect`).
     #[serde(default)]
     protocol: Option<String>,
+    #[serde(default)]
+    transport: Option<String>,
+    #[serde(default)]
+    tailcat_address: Option<String>,
+}
+
+impl std::fmt::Debug for QuickAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuickAuth")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[redacted]"))
+            .field("private_key", &self.private_key.as_ref().map(|_| "[redacted]"))
+            .field("passphrase", &self.passphrase.as_ref().map(|_| "[redacted]"))
+            .field("protocol", &self.protocol)
+            .field("transport", &self.transport)
+            .field("tailcat_address", &self.tailcat_address.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// Largest number of connect-time secret prompts (a missing password or key
@@ -13791,7 +14010,7 @@ fn resolve_jump_auth(
                    s.password as s_pass, c.password as c_pass,
                    s.key_id   as s_key,  c.key_id   as c_key,
                    s.auth_type, c.auth_type as cred_auth_type,
-                   s.protocol, s.name
+                   s.protocol, s.name, COALESCE(s.transport, 'direct')
             FROM servers s
             LEFT JOIN credentials c ON s.credential_id = c.id
             WHERE s.id=?1
@@ -13803,6 +14022,9 @@ fn resolve_jump_auth(
         Some(r) => r,
         None => return Ok(None),
     };
+    if row.get::<_, String>(12).unwrap_or_else(|_| "direct".into()) == "tailcat" {
+        return Err("Tailcat transport cannot be used as a ProxyJump host".into());
+    }
     let host: String = row.get::<_, String>(0).map_err(|e| format!("[DB] jump host: {}", e))?;
     let port: i32 = row.get::<_, i32>(1).map_err(|e| format!("[DB] jump port: {}", e))?;
     let s_user: Option<String> = row.get::<_, Option<String>>(2).unwrap_or_default();
@@ -14712,6 +14934,10 @@ async fn initiate_connection(
     // same tuple shape from the inline values so all downstream code
     // (auth, tunnel-start, handler setup) doesn't need to branch.
     let db_res = if let Some(q) = quick_auth.as_ref() {
+        let (transport, tailcat_address) = normalize_transport(q.transport.clone(), q.tailcat_address.clone())?;
+        if transport == "tailcat" && q.protocol.as_deref().is_some_and(|protocol| protocol != "ssh") {
+            return Err("Tailcat transport is only supported for SSH servers".into());
+        }
         let key_data = q.private_key
             .clone()
             .filter(|s| !s.trim().is_empty())
@@ -14734,6 +14960,8 @@ async fn initiate_connection(
             None,                       // effective_key_id (auth code branches on key_data, not this)
             "[]".to_string(),           // tunnels_json — no auto-start tunnels
             None,                       // jump_host_id — quick connect never bounces through a bastion
+            transport,
+            tailcat_address,
         ))
     } else {
     // Fetch DB record inside a nested block to drop non-Send Rows/Statement before any await
@@ -14753,7 +14981,7 @@ async fn initiate_connection(
                    s.key_id   as s_key,  c.key_id   as c_key,
                    s.proxy_type, s.proxy_host, s.proxy_port,
                    s.auth_type, c.auth_type as cred_auth_type, s.tunnels,
-                   s.jump_host_id, s.protocol
+                   s.jump_host_id, s.protocol, s.transport, s.tailcat_address
             FROM servers s
             LEFT JOIN credentials c ON s.credential_id = c.id
             WHERE s.id=?1
@@ -14789,6 +15017,11 @@ async fn initiate_connection(
                 Some("vnc") => return Err("This is a VNC server: it opens as a screen, not a terminal".into()),
                 Some("ftp" | "ftps" | "ftps-implicit") => return Err("This is an FTP server: it opens as files, not a terminal".into()),
                 _ => {}
+            }
+            let transport: String = row.get::<_, Option<String>>(16).unwrap_or_default().unwrap_or_else(|| "direct".into());
+            let tailcat_address: Option<String> = row.get::<_, Option<String>>(17).unwrap_or_default();
+            if transport == "tailcat" && row.get::<_, Option<String>>(15).unwrap_or_default().as_deref().is_some_and(|protocol| protocol != "ssh") {
+                return Err("Tailcat transport is only supported for SSH servers".into());
             }
 
             // Single source of truth per auth_type — no field mixing.
@@ -14831,19 +15064,37 @@ async fn initiate_connection(
                 None
             };
 
-            Some((host, port, username, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, key_id, effective_key_id, tunnels_json, jump_host_id))
+            Some((host, port, username, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, key_id, effective_key_id, tunnels_json, jump_host_id, transport, tailcat_address))
         } else {
             None
         }
     }
     };
 
-    let (host, port, user, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, db_key_id, effective_key_id, tunnels_json, jump_host_id) = match db_res {
+    let (host, port, user, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, db_key_id, effective_key_id, tunnels_json, jump_host_id, transport, tailcat_address) = match db_res {
         Some(val) => val,
         None => {
             return Err("Server not found".into());
         }
     };
+
+    let (transport, tailcat_address) = normalize_transport(Some(transport), tailcat_address)?;
+    #[cfg(not(feature = "tailcat-capi"))]
+    let _tailcat_address = tailcat_address;
+    let host = if transport == "tailcat" {
+        #[cfg(feature = "tailcat-capi")]
+        {
+            let address = tailcat_address.as_deref().ok_or("Tailcat address is missing or invalid")?;
+            crate::tailcat_capi::verification_host(address)
+        }
+        #[cfg(not(feature = "tailcat-capi"))]
+        {
+            return Err("This Submarine build was not compiled with Tailcat support".into());
+        }
+    } else {
+        host
+    };
+    let jump_host_id = if transport == "tailcat" { None } else { jump_host_id };
 
     // What ~/.ssh/config says about this host: an alias's address and port, a
     // User for a node saved without one, the agent (and, for later steps, the
@@ -14857,6 +15108,12 @@ async fn initiate_connection(
         let port = u16::try_from(port).map_err(|_| format!("Port {port} isn't a valid port"))?;
         ConfigTarget::resolve(&host, port, &user, name).await
     };
+    if transport == "tailcat" {
+        // SSH config may supply authentication and host-key options, but the
+        // Tailcat address and saved SSH port define the actual endpoint.
+        config_target.host = host.clone();
+        config_target.port = u16::try_from(port).map_err(|_| format!("Port {port} isn't a valid port"))?;
+    }
     // Its ProxyCommand / ProxyJump, unless the server has its own route.
     let own_route = if jump_host_id.is_some() {
         Some("jump host")
@@ -14867,7 +15124,7 @@ async fn initiate_connection(
             _ => None,
         }
     };
-    let config_proxy = config_target.proxy(own_route);
+    let config_proxy = if transport == "tailcat" { None } else { config_target.proxy(own_route) };
     let identities = config_target.identities(&user);
     let known_files = config_target.known_hosts_files(&user);
     let host_trust = known_hosts::for_host(known_files, &config_target.host, config_target.port).await;
@@ -15084,7 +15341,26 @@ async fn initiate_connection(
             } else {
                 None
             };
-        let stream_res: Result<Box<dyn AsyncStream>, String> = if let Some(route) = route {
+        let stream_res: Result<Box<dyn AsyncStream>, String> = if transport == "tailcat" {
+            emit_log("Opening Tailcat transport...", "info");
+            #[cfg(feature = "tailcat-capi")]
+            {
+                let address = tailcat_address.as_deref().expect("validated before spawning worker");
+                match tokio::time::timeout(
+                    Duration::from_secs(20),
+                    crate::tailcat_capi::open_tcp(address, port as u16),
+                ).await {
+                    Ok(Ok(stream)) => {
+                        emit_log("Tailcat transport established.", "success");
+                        Ok(Box::new(stream) as Box<dyn AsyncStream>)
+                    }
+                    Ok(Err(error)) => Err(format!("Tailcat transport: {error}")),
+                    Err(_) => Err("Tailcat connection timed out".into()),
+                }
+            }
+            #[cfg(not(feature = "tailcat-capi"))]
+            { Err("This Submarine build was not compiled with Tailcat support".into()) }
+        } else if let Some(route) = route {
             match route {
                 Ok(chain) => match chain.last() {
                     Some(last) => match hop_channel(last, &host, port as u16).await {
@@ -26490,7 +26766,8 @@ fn resolve_node_auth_for_monitor(
                s.password, c.password,
                s.key_id,   c.key_id,
                s.auth_type, c.auth_type as cred_auth_type,
-               s.proxy_type, s.proxy_host, s.proxy_port, s.protocol
+               s.proxy_type, s.proxy_host, s.proxy_port, s.protocol,
+               s.transport, s.tailcat_address
         FROM servers s
         LEFT JOIN credentials c ON s.credential_id = c.id
         WHERE s.id = ?1
@@ -26511,10 +26788,27 @@ fn resolve_node_auth_for_monitor(
     let proxy_type: String = row.get::<_, Option<String>>(10).ok().flatten().unwrap_or_else(|| "none".into());
     let proxy_host: Option<String> = row.get(11).ok().flatten();
     let proxy_port: Option<i32> = row.get(12).ok().flatten();
+    let transport: String = row.get::<_, Option<String>>(14).ok().flatten().unwrap_or_else(|| "direct".into());
+    let tailcat_address: Option<String> = row.get(15).ok().flatten();
     // An RDP server has no shell to read numbers from (issue #3).
     if row.get::<_, Option<String>>(13).ok().flatten().as_deref() == Some("rdp") {
         return Err("an RDP server can't be monitored".into());
     }
+    let (transport, tailcat_address) = normalize_transport(Some(transport), tailcat_address)?;
+    let host = if transport == "tailcat" {
+        if row.get::<_, Option<String>>(13).ok().flatten().as_deref().is_some_and(|p| p != "ssh") {
+            return Err("Tailcat transport is only supported for SSH servers".into());
+        }
+        #[cfg(feature = "tailcat-capi")]
+        {
+            let address = tailcat_address.as_deref().ok_or("Tailcat address is missing or invalid")?;
+            crate::tailcat_capi::verification_host(address)
+        }
+        #[cfg(not(feature = "tailcat-capi"))]
+        { return Err("This Submarine build was not compiled with Tailcat support".into()); }
+    } else {
+        host
+    };
 
     let (username, password, key_id) = if auth_type == "vault" {
         (c_user.unwrap_or_default(), c_pass, c_key)
@@ -26553,9 +26847,11 @@ fn resolve_node_auth_for_monitor(
         password,
         private_key,
         passphrase,
-        proxy_type,
-        proxy_host: proxy_host.filter(|s| !s.is_empty()),
+        proxy_type: if transport == "tailcat" { "none".into() } else { proxy_type },
+        proxy_host: if transport == "tailcat" { None } else { proxy_host.filter(|s| !s.is_empty()) },
         proxy_port: proxy_port.map(|p| p as u16),
+        transport,
+        tailcat_address,
     })
 }
 
@@ -27300,7 +27596,7 @@ pub fn run() {
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
             profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions, cloud_resume_profile, profile_copies, restore_profile_copy, folder_copy_status, folder_copy_choose, folder_copy_stop, folder_copy_now,
             set_editor_label,
-            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_auto_open, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
+            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_auto_open, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_server_tailcat_address, tailcat_available, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders, move_folder, move_server_to_folder,
             add_command, edit_command, set_command_scope, set_command_secret_tags, delete_command, get_commands,

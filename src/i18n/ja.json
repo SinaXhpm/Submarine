@@ -2196,5 +2196,13 @@
   "Your profiles sync automatically once open — manage sync and sharing for a profile from its {profile} panel inside the app.": "プロファイルは開くと自動的に同期されます。プロファイルごとの同期と共有は、アプリ内の「{profile}」パネルで管理します。",
   "Your saved passwords and SSH keys.": "保存済みのパスワードとSSH鍵です。",
   "Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.": "保存したプロファイルとサーバーはそのままですが、開いていたセッションは閉じられました。ターミナルで実行していたものは終了し、スクロールバックも失われています。再読み込みすると、ほとんどの場合エラーは解消され、プロファイルの選択画面に戻ります。繰り返し起こる場合は、バグを報告するときに下の詳細をコピーしてください。",
-  "ZRLE (any colour depth)": "ZRLE（任意の色深度）"
+  "ZRLE (any colour depth)": "ZRLE（任意の色深度）",
+  "Direct": "直接",
+  "Enter a Tailcat address beginning with tc": "tc で始まる Tailcat アドレスを入力してください",
+  "Name and a valid Tailcat address are required.": "名前と有効な Tailcat アドレスが必要です。",
+  "not included in this build": "このビルドには含まれていません",
+  "Tailcat": "Tailcat",
+  "This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.": "このアドレスは秘密のアクセス情報です。暗号化されたプロファイルに保存され、同じプロファイルと同期されます。信頼できるプロファイルでのみ使用してください。",
+  "Transport": "トランスポート",
+  "Tailcat address": "Tailcat アドレス"
 }

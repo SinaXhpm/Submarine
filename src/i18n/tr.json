@@ -2196,5 +2196,13 @@
   "Your profiles sync automatically once open — manage sync and sharing for a profile from its {profile} panel inside the app.": "Profilleriniz açıldıktan sonra otomatik olarak eşitlenir; bir profilin eşitleme ve paylaşım ayarlarını uygulamanın içindeki {profile} panelinden yönetin.",
   "Your saved passwords and SSH keys.": "Kayıtlı parolalarınız ve SSH anahtarlarınız.",
   "Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.": "Kayıtlı profilleriniz ve sunucularınız etkilenmedi, ancak bu hata açık oturumlarınızı kapattı: terminallerinde çalışan her şey sona erdi ve geri kaydırma arabellekleri kayboldu. Yeniden yüklemek hatayı neredeyse her zaman giderir ve sizi profil seçiciye geri götürür. Sorun sürerse hatayı bildirirken aşağıdaki ayrıntıları kopyalayın.",
-  "ZRLE (any colour depth)": "ZRLE (her renk derinliği)"
+  "ZRLE (any colour depth)": "ZRLE (her renk derinliği)",
+  "Direct": "Doğrudan",
+  "Enter a Tailcat address beginning with tc": "tc ile başlayan bir Tailcat adresi girin",
+  "Name and a valid Tailcat address are required.": "Ad ve geçerli bir Tailcat adresi gereklidir.",
+  "not included in this build": "bu derlemeye dahil değil",
+  "Tailcat": "Tailcat",
+  "This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.": "Bu adres gizli bir erişim bilgisidir. Şifrelenmiş profilde saklanır ve profille eşitlenir; yalnızca güvendiğiniz profillerde kullanın.",
+  "Transport": "Taşıma",
+  "Tailcat address": "Tailcat adresi"
 }

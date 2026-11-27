@@ -2196,5 +2196,13 @@
   "Your profiles sync automatically once open — manage sync and sharing for a profile from its {profile} panel inside the app.": "你的配置文件打开后会自动同步——要管理某个配置文件的同步和共享，请在应用内打开它的“{profile}”面板。",
   "Your saved passwords and SSH keys.": "已保存的密码和 SSH 密钥。",
   "Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.": "已保存的配置文件和服务器都没有受到影响，但打开的会话已被关闭：终端中运行的程序已经结束，回滚缓冲也已丢失。重新加载几乎总能清除这个错误，并带你回到配置文件选择界面。如果问题反复出现，报告这个问题时请复制下方的详细信息。",
-  "ZRLE (any colour depth)": "ZRLE（任意色深）"
+  "ZRLE (any colour depth)": "ZRLE（任意色深）",
+  "Direct": "直连",
+  "Enter a Tailcat address beginning with tc": "输入以 tc 开头的 Tailcat 地址",
+  "Name and a valid Tailcat address are required.": "需要名称和有效的 Tailcat 地址。",
+  "not included in this build": "此版本未包含",
+  "Tailcat": "Tailcat",
+  "This address is a capability secret. It is stored in the encrypted profile and syncs with that profile; only use it in profiles you trust.": "此地址是机密访问凭据。它存储在加密配置文件中并随配置文件同步；仅在可信配置文件中使用。",
+  "Transport": "传输方式",
+  "Tailcat address": "Tailcat 地址"
 }
