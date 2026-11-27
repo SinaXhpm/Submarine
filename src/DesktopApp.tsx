@@ -22,6 +22,7 @@ import { useConfirm, useTextPrompt } from "./ui/confirm";
 import { useSlideOverFocus } from "./ui/slideOverFocus";
 import { RenameInput } from "./ui/renameInput";
 import { forgetServerBookmarks } from "./util/sftpBookmarks";
+import { SHOW_RECENT_KEY, forgetAllRecent, readRecent, readShowRecent, withRecent, writeRecent, type RecentServer } from "./util/recentServers";
 import { useIsNarrow } from "./hooks/useViewport";
 import { IS_MOBILE } from "./util/platform";
 import { FONT_FAMILY_KEY, FONT_SIZE_KEY, FONT_SIZE_REQUEST, readFontFamily, readFontSize, requestedFontSize } from "./util/terminalFont";
@@ -581,6 +582,8 @@ function DesktopApp() {
     // Off by default: the update notice tells about full releases only. See
     // util/updateChannel.
     updateBeta: readUpdateBeta(),
+    // On by default: the Recent row on the Servers page. See util/recentServers.
+    showRecentServers: readShowRecent(),
   });
 
   useEffect(() => {
@@ -609,6 +612,7 @@ function DesktopApp() {
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
     localStorage.setItem('submarine-sync-interval-min', String(appSettings.syncIntervalMin));
     localStorage.setItem(UPDATE_BETA_KEY, appSettings.updateBeta ? 'on' : 'off');
+    localStorage.setItem(SHOW_RECENT_KEY, appSettings.showRecentServers === false ? 'off' : 'on');
     // Tell already-mounted terminals to re-fit with the new font size / face.
     // Without this dispatch the listener in TerminalView is dead code and
     // users have to close+reopen every terminal to see a size change.
@@ -987,10 +991,55 @@ function DesktopApp() {
     };
   }, [isUnlocked, appSettings.autoSync, appSettings.syncIntervalMin, quietSync]);
 
+  // The servers this device connected to last (the Recent row on the Servers
+  // page): a server goes first each time a tab of it reaches "connected".
+  // Nothing is kept while Settings has the row off.
+  // Read and written through storage, so a late caller (a quick connect's
+  // save) still works on the newest list.
+  const [recentServers, setRecentServers] = useState<RecentServer[]>([]);
+  useEffect(() => { setRecentServers(activeProfile ? readRecent(activeProfile) : []); }, [activeProfile]);
+  const showRecent = appSettings.showRecentServers !== false;
+  const noteRecent = useCallback((uuid: string) => {
+    if (!activeProfile || !showRecent) return;
+    const known = new Set<string>(servers.map((s) => s.uuid).filter(Boolean));
+    const next = withRecent(readRecent(activeProfile), uuid, Date.now(), known);
+    writeRecent(activeProfile, next);
+    setRecentServers(next);
+  }, [activeProfile, servers, showRecent]);
+  // Turned off: the row goes, with every profile's list on this device.
+  useEffect(() => {
+    if (showRecent) return;
+    forgetAllRecent();
+    setRecentServers([]);
+  }, [showRecent]);
+  // One server out of Recent, or all of them (null).
+  const forgetRecent = useCallback((uuid: string | null) => {
+    if (!activeProfile) return;
+    const next = uuid ? readRecent(activeProfile).filter((e) => e.uuid !== uuid) : [];
+    writeRecent(activeProfile, next);
+    setRecentServers(next);
+  }, [activeProfile]);
+  // A quick connect's tab has no saved server until save_quick_connect_node
+  // answers: its uuid, by session id, once it has one.
+  const quickUuids = useRef<Record<string, string>>({});
+  // The statuses as the last run below saw them: a tab counts once per
+  // connect, not on every render while it stays connected.
+  const statusesSeen = useRef<Record<string, string>>({});
+  useEffect(() => {
+    const before = statusesSeen.current;
+    statusesSeen.current = sessionStatuses;
+    for (const [id, status] of Object.entries(sessionStatuses)) {
+      if (status !== "connected" || before[id] === "connected") continue;
+      const uuid = sessions.find((s) => s.id === id)?.serverUuid ?? quickUuids.current[id];
+      if (uuid) noteRecent(uuid);
+    }
+  }, [sessionStatuses, sessions, noteRecent]);
+
   // What this device keeps for a server and the sync doesn't: it goes with the server.
   const forgetServer = (s: { id: number; uuid?: string | null }) => {
     if (activeProfile) forgetServerBookmarks(activeProfile, s.id);
     if (s.uuid) {
+      forgetRecent(s.uuid);
       forgetRdpOptions(s.uuid);
       forgetSessionKeep(s.uuid);
       forgetServerLogChoice(s.uuid);
@@ -1462,8 +1511,19 @@ function DesktopApp() {
     addLog(t("Quick connect → {name}", { name: displayName }), "info");
     // Persist a root-level profile for reuse. Best-effort: a failure here must
     // never block the live connection the user just asked for.
-    invoke("save_quick_connect_node", { auth })
-      .then(() => { refreshServers(); bumpSync(); addLog(t("Saved node → {name}", { name: displayName }), "success"); })
+    invoke<number>("save_quick_connect_node", { auth })
+      .then((id) => {
+        refreshServers(); bumpSync(); addLog(t("Saved node → {name}", { name: displayName }), "success");
+        // The saved server goes into Recent like any other: now if the tab
+        // has connected already, else when it does. A failed list is logged
+        // by refreshServers above; Recent only misses this connect then.
+        invoke<any[]>("get_servers").then((list) => {
+          const uuid = list.find((s) => s.id === id)?.uuid;
+          if (!uuid) return;
+          quickUuids.current[sessionId] = uuid;
+          if (statusesSeen.current[sessionId] === "connected") noteRecent(uuid);
+        }, () => {});
+      })
       .catch((e) => addLog(`QUICK_NODE_SAVE_FAILED: ${e}`, "error"));
   };
 
@@ -2681,6 +2741,8 @@ function DesktopApp() {
                 folders={folders}
                 credentials={credentials}
                 serverTabs={serverTabs}
+                recentServers={recentServers}
+                onForgetRecent={forgetRecent}
                 activeFolderId={activeFolderId}
                 onActiveFolderChange={setActiveFolderId}
                 onOpenServer={openServer}

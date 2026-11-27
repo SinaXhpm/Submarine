@@ -1,4 +1,4 @@
-import { Search, Plus, Server, Folder, FolderPlus, ChevronLeft, ChevronRight, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound, Sparkles, LayoutGrid, List } from "lucide-react";
+import { Search, Plus, Server, Folder, FolderPlus, ChevronLeft, ChevronRight, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound, Sparkles, LayoutGrid, List, History } from "lucide-react";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
@@ -9,13 +9,15 @@ import { tn, useT } from "../i18n";
 import { ai, AI_LEVEL_EVENT, type Level } from "../util/aiApi";
 import { LevelMenu } from "./ai/LevelPicker";
 import { PROTOCOL_ICON, USUAL_PORT, TAB_DOT, avatarStyle, protocolOf } from "../util/serverLook";
+import { IS_IOS } from "../util/platform";
+import { RowMenu, type MenuPlace } from "../ui/rowMenu";
 
 // The servers as a grid of cards or as a list, kept on this device.
 const VIEW_KEY = "submarine-servers-view";
 // The list's columns: name, address, type, the open tab, the buttons.
 const LIST_COLS = "grid grid-cols-[minmax(0,1.3fr)_minmax(0,1.6fr)_4.5rem_minmax(0,9rem)_7rem] items-center gap-3";
 
-export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onMoveServer, onMoveFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, shareGrant, onUnlockSharing, heldDeletions, onResolveDeletions, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, credentials, serverTabs, recentServers, onForgetRecent, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onMoveServer, onMoveFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, shareGrant, onUnlockSharing, heldDeletions, onResolveDeletions, isMobile }: any) => {
   const t = useT();
   const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -51,17 +53,26 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
     return (saved ? loginUser.get(s.credential_id) : s.username) || "";
   };
   // user@host, and the port when it isn't the protocol's usual one.
+  const otherPort = (s: any): number | null => {
+    const port = Number(s.port);
+    return port > 0 && port !== USUAL_PORT[protocolOf(s)] ? port : null;
+  };
   const address = (s: any) => {
     const user = loginOf(s);
-    const port = Number(s.port);
-    const other = port > 0 && port !== USUAL_PORT[protocolOf(s)];
+    const port = otherPort(s);
     return (
       <>
         {user && <span className="text-zinc-500">{user}@</span>}
         {s.host}
-        {other && <span className="text-zinc-500">:{port}</span>}
+        {port !== null && <span className="text-zinc-500">:{port}</span>}
       </>
     );
+  };
+  // The same as plain text, for a tooltip.
+  const addressText = (s: any): string => {
+    const user = loginOf(s);
+    const port = otherPort(s);
+    return `${user ? `${user}@` : ""}${s.host}${port !== null ? `:${port}` : ""}`;
   };
   const tabTitle = (st: string): string =>
     st === "waiting" ? t("Waiting for you — open this tab to answer") :
@@ -190,6 +201,82 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
     ? filteredServers
     : filteredServers.filter((s: any) => tree.serverFolder(s) === activeFolderId);
   const displayedFolders = isSearching ? [] : tree.childrenOf(activeFolderId);
+
+  // The Recent row: the servers this device connected to last that are still
+  // in the profile, newest first. Not while searching: the matches are what
+  // the page is for then, and on a phone the keyboard leaves little room.
+  const recent = useMemo(() => {
+    const byUuid = new Map<string, any>((servers || []).filter((s: any) => s.uuid).map((s: any) => [s.uuid, s]));
+    return ((recentServers || []) as { uuid: string; at: number }[]).flatMap((r) => {
+      const server = byUuid.get(r.uuid);
+      return server ? [{ server, at: r.at }] : [];
+    });
+  }, [servers, recentServers]);
+  const showRecent = recent.length > 0 && !isSearching && !!onForgetRecent;
+  // The ends of the row with chips out of sight fade, as a phone's own
+  // sideways lists do: a row cut just between two chips still shows that
+  // there are more. Measured again when the row or a chip changes size.
+  const recentRowRef = useRef<HTMLUListElement>(null);
+  const [recentFade, setRecentFade] = useState({ start: false, end: false });
+  const measureRecentRow = useCallback(() => {
+    const row = recentRowRef.current;
+    if (!row) return;
+    const start = row.scrollLeft > 1;
+    const end = row.scrollLeft + row.clientWidth < row.scrollWidth - 1;
+    setRecentFade((p) => (p.start === start && p.end === end ? p : { start, end }));
+  }, []);
+  useLayoutEffect(() => {
+    const row = recentRowRef.current;
+    if (!row) return;
+    measureRecentRow();
+    const observer = new ResizeObserver(measureRecentRow);
+    observer.observe(row);
+    for (const chip of row.children) observer.observe(chip);
+    return () => observer.disconnect();
+  }, [showRecent, recent, measureRecentRow]);
+  const recentMask =
+    recentFade.start && recentFade.end ? "linear-gradient(to right, transparent, #000 2rem, #000 calc(100% - 2rem), transparent)" :
+    recentFade.start ? "linear-gradient(to right, transparent, #000 2rem)" :
+    recentFade.end ? "linear-gradient(to left, transparent, #000 2rem)" :
+    undefined;
+  // A chip's menu (Remove, for a touch screen, which has no hover ×): a
+  // right-click, the menu key, or a long press. Android's web view sends
+  // contextmenu for a long press; iOS's doesn't, so there a finger held still
+  // for 500 ms opens it, and the tap it ends in doesn't open the server.
+  const [recentMenu, setRecentMenu] = useState<{ uuid: string; place: MenuPlace; from: HTMLElement | null } | null>(null);
+  const recentHold = useRef<{ x: number; y: number; fired: boolean; timer: number } | null>(null);
+  const openRecentMenu = (uuid: string, chip: HTMLElement, x: number) => {
+    const r = chip.getBoundingClientRect();
+    // Over the chip (under it only short of room), clear of the finger and
+    // of the hand below it; at the pointer's x if it has one.
+    const place = { x: x >= r.left && x <= r.right ? x : r.left, top: r.top, bottom: r.bottom, end: false, up: true };
+    setRecentMenu({ uuid, place, from: chip.querySelector("button") });
+  };
+  // Takes a chip out. The focus goes on to the next one (or back), not to the page.
+  const forgetRecentChip = (chip: HTMLElement | null, uuid: string) => {
+    const li = chip?.closest("li");
+    const next = (li?.nextElementSibling ?? li?.previousElementSibling)?.querySelector("button");
+    onForgetRecent(uuid);
+    next?.focus();
+  };
+  const holdRecent = (e: React.PointerEvent<HTMLElement>, uuid: string) => {
+    clearTimeout(recentHold.current?.timer);
+    recentHold.current = null;
+    if (!IS_IOS || e.pointerType !== "touch") return;
+    const chip = e.currentTarget;
+    const hold = { x: e.clientX, y: e.clientY, fired: false, timer: 0 };
+    hold.timer = window.setTimeout(() => { hold.fired = true; openRecentMenu(uuid, chip, hold.x); }, 500);
+    recentHold.current = hold;
+  };
+  // A lifted finger, or a swipe (the row scrolls), before the 500 ms are up.
+  const dropRecentHold = () => {
+    const hold = recentHold.current;
+    if (!hold || hold.fired) return;
+    clearTimeout(hold.timer);
+    recentHold.current = null;
+  };
+  useEffect(() => () => clearTimeout(recentHold.current?.timer), []);
+  const menuChip = recentMenu && showRecent ? recent.find((r) => r.server.uuid === recentMenu.uuid) : undefined;
 
   // Drag a server or a folder onto a folder card (into it) or onto a step of
   // the path above the grid (up to it). The target under the pointer: a
@@ -1167,6 +1254,118 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
           </div>
         )}
       </div>
+
+      {/* Recent, under the list and outside its scroll, so it is at hand at
+          every folder level however long the list. One row: what doesn't
+          fit scrolls sideways (a swipe, or the mouse wheel over it), and an
+          end with chips out of sight fades. The × on hover or the Delete key
+          takes one out; Clear takes all. */}
+      {showRecent && (
+        <section aria-label={t("Recent|servers")} className="shrink-0 flex items-center gap-2 pt-3 border-t border-white/5">
+          <span aria-hidden className="flex items-center gap-1.5 shrink-0 text-[11px] font-semibold text-zinc-500">
+            <History size={13} />
+            {!isMobile && t("Recent|servers")}
+          </span>
+          <ul
+            ref={recentRowRef}
+            // scroll-px: room for the fade when a chip is brought into view.
+            className="flex-1 min-w-0 flex items-center gap-1.5 p-0.5 overflow-x-auto no-scrollbar scroll-px-8"
+            style={recentMask ? { maskImage: recentMask, WebkitMaskImage: recentMask } : undefined}
+            onScroll={measureRecentRow}
+            onWheel={(e) => {
+              // Nothing scrolls up and down under the row, so the wheel is free.
+              const row = e.currentTarget;
+              if (row.scrollWidth <= row.clientWidth || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+              row.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+            }}
+          >
+            {recent.map(({ server: s, at }) => {
+              const Icon = PROTOCOL_ICON[protocolOf(s)];
+              const tab: string | undefined = serverTabs?.[s.id];
+              const when = new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+              const remove = t("Remove {name} from recent servers", { name: s.name });
+              return (
+                <li
+                  key={s.uuid}
+                  className="group relative shrink-0"
+                  onContextMenu={(e) => { e.preventDefault(); openRecentMenu(s.uuid, e.currentTarget, e.clientX); }}
+                  onPointerDown={(e) => holdRecent(e, s.uuid)}
+                  onPointerMove={(e) => {
+                    const hold = recentHold.current;
+                    if (hold && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) > 8) dropRecentHold();
+                  }}
+                  onPointerUp={dropRecentHold}
+                  onPointerCancel={dropRecentHold}
+                  // No click (or a tap on the menu's backdrop) when the finger lifts.
+                  onTouchEnd={(e) => { if (recentHold.current?.fired) e.preventDefault(); }}
+                >
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      // Still the long press that opened the menu (a key's click has detail 0).
+                      if (recentHold.current?.fired && e.detail > 0) { recentHold.current = null; return; }
+                      onOpenServer(s);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Delete" && e.key !== "Backspace") return;
+                      e.preventDefault();
+                      forgetRecentChip(e.currentTarget, s.uuid);
+                    }}
+                    onFocus={(e) => {
+                      // Tab leaves a chip it can see where it is, even under a
+                      // fade; this moves it clear (the row's scroll padding).
+                      // Not for a click, which would move the chip under the mouse.
+                      if (e.currentTarget.matches(":focus-visible")) e.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
+                    }}
+                    title={[s.name, addressText(s), t("Last connected {when}", { when }), tab ? tabTitle(tab) : ""].filter(Boolean).join("\n")}
+                    className="flex items-center gap-2 h-10 sm:h-8 max-w-[9rem] sm:max-w-[12rem] pl-1.5 pr-3 rounded-lg border border-white/5 bg-shade-17171c hover:border-primary/40 text-[12px] font-semibold text-zinc-200 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                  >
+                    <span className="relative w-6 h-6 sm:w-5 sm:h-5 rounded-md border flex items-center justify-center shrink-0" style={avatarStyle(s.color)}>
+                      <Icon size={isMobile ? 12 : 11} />
+                      {tab && <span role="img" aria-label={tabTitle(tab)} className={`absolute -bottom-1 -right-1 w-2.5 h-2.5 rounded-full border-2 border-shade-17171c ${TAB_DOT[tab] ?? 'bg-zinc-500'}`} />}
+                    </span>
+                    <span className="truncate">{s.name}</span>
+                  </button>
+                  {/* Over the name's end, which fades under it, as a card's
+                      buttons do. A mouse's: not a Tab stop (Delete does it
+                      from the keyboard), and not on a touch screen. */}
+                  <span className="absolute inset-y-px right-px flex items-center pl-4 pr-1 rounded-r-lg bg-gradient-to-l from-shade-17171c via-shade-17171c to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none [@media(hover:none)]:hidden">
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      onClick={() => onForgetRecent(s.uuid)}
+                      title={remove}
+                      aria-label={remove}
+                      className="pointer-events-auto w-5 h-5 rounded flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-white/10"
+                    >
+                      <X size={11} />
+                    </button>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          <button
+            type="button"
+            onClick={() => onForgetRecent(null)}
+            title={t("Clear recent servers")}
+            aria-label={t("Clear recent servers")}
+            className={`${headerButton} ${isMobile ? 'w-10 justify-center' : 'px-2.5'} border-transparent text-zinc-500 hover:text-zinc-200 hover:bg-white/5`}
+          >
+            <X size={13} /> {!isMobile && t("Clear")}
+          </button>
+          {/* Out of the chips' tree: a right-click on its backdrop would
+              open it again from there. */}
+          {menuChip && recentMenu && (
+            <RowMenu
+              label={t("Actions for {name}", { name: menuChip.server.name })}
+              items={[{ label: t("Remove from recent servers"), icon: <X size={14} />, onSelect: () => forgetRecentChip(recentMenu.from, recentMenu.uuid) }]}
+              place={recentMenu.place}
+              onClose={(refocus) => { setRecentMenu(null); if (refocus) recentMenu.from?.focus(); }}
+            />
+          )}
+        </section>
+      )}
 
       {/* Floating drag clone — a fixed-position copy of the node that the
           pointer carries while the grid reflows underneath. pointer-events:none
