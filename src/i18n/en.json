@@ -1972,6 +1972,7 @@
   "This deletes {email} on {host} and everything stored for it there: the cloud copies of your profiles, your sharing key, and every profile you shared (the people you shared it with lose access). The profiles on your devices are not touched. This can't be undone.": "This deletes {email} on {host} and everything stored for it there: the cloud copies of your profiles, your sharing key, and every profile you shared (the people you shared it with lose access). The profiles on your devices are not touched. This can't be undone.",
   "This device → server": "This device → server",
   "This device's clipboard couldn't be read: {error}": "This device's clipboard couldn't be read: {error}",
+  "This device's clipboard holds no text to paste.": "This device's clipboard holds no text to paste.",
   "This file may contain secrets (DB passwords, API keys). View-only — Submarine never edits compose files.": "This file may contain secrets (DB passwords, API keys). View-only — Submarine never edits compose files.",
   "This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.": "This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.",
   "This is a link: these are the settings of the file it points to, and changes apply to that file.": "This is a link: these are the settings of the file it points to, and changes apply to that file.",

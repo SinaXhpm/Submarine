@@ -1972,6 +1972,7 @@
   "This deletes {email} on {host} and everything stored for it there: the cloud copies of your profiles, your sharing key, and every profile you shared (the people you shared it with lose access). The profiles on your devices are not touched. This can't be undone.": "这会删除 {host} 上的账号 {email}，以及服务器为它保存的所有数据：配置文件的云端副本、你用于共享的密钥，以及你共享的每个配置文件（共享成员将失去访问权限）。你设备上的配置文件不受影响。此操作无法撤销。",
   "This device → server": "本设备 → 服务器",
   "This device's clipboard couldn't be read: {error}": "无法读取本设备的剪贴板：{error}",
+  "This device's clipboard holds no text to paste.": "本设备的剪贴板中没有可粘贴的文本。",
   "This file may contain secrets (DB passwords, API keys). View-only — Submarine never edits compose files.": "此文件可能包含机密信息（数据库密码、API 密钥）。仅供查看：Submarine 从不编辑 Compose 文件。",
   "This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.": "此主机会作为服务器保存到根目录，方便再次使用。可随时在服务器列表中编辑或移除。",
   "This is a link: these are the settings of the file it points to, and changes apply to that file.": "这是一个链接：这里显示的是它所指向文件的设置，更改也会应用到该文件。",

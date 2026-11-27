@@ -168,16 +168,16 @@ pub const MAX_PASTE: usize = 1_000_000;
 pub const COPY_EVERY: Duration = Duration::from_millis(250);
 
 /// The server's copy waiting for the tab, and when the last one went (the
-/// built-in RDP client's too).
+/// built-in RDP client's too, where a copy without text is told as well).
 #[derive(Default)]
-pub struct Copies {
-    pub due: Option<String>,
+pub struct Copies<T = String> {
+    pub due: Option<T>,
     sent_at: Option<Instant>,
 }
 
-impl Copies {
+impl<T> Copies<T> {
     /// The copy to hand on at `now`, if one is due and the last went long enough ago.
-    pub fn take(&mut self, now: Instant) -> Option<String> {
+    pub fn take(&mut self, now: Instant) -> Option<T> {
         if self.sent_at.is_some_and(|at| now.saturating_duration_since(at) < COPY_EVERY) {
             return None;
         }
@@ -1782,7 +1782,7 @@ mod tests {
     #[test]
     fn the_servers_copies_reach_the_tab_at_most_every_quarter_second_the_latest_one() {
         let t0 = Instant::now();
-        let mut c = Copies::default();
+        let mut c: Copies = Copies::default();
         assert_eq!(c.take(t0), None, "nothing copied");
         c.due = Some("one".into());
         assert_eq!(c.take(t0).as_deref(), Some("one"));

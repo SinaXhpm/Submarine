@@ -1972,6 +1972,7 @@
   "This deletes {email} on {host} and everything stored for it there: the cloud copies of your profiles, your sharing key, and every profile you shared (the people you shared it with lose access). The profiles on your devices are not touched. This can't be undone.": "यह {host} पर {email} को और वहाँ उसके लिए रखी गई हर चीज़ को डिलीट कर देता है: आपकी प्रोफ़ाइलों की क्लाउड कॉपी, आपकी शेयरिंग कुंजी, और आपकी शेयर की गई हर प्रोफ़ाइल (जिनके साथ आपने शेयर किया था, उनकी पहुँच ख़त्म हो जाएगी)। आपके डिवाइस पर रखी प्रोफ़ाइलें जस की तस रहेंगी। इसे वापस नहीं लिया जा सकता।",
   "This device → server": "यह डिवाइस → सर्वर",
   "This device's clipboard couldn't be read: {error}": "इस डिवाइस का क्लिपबोर्ड पढ़ा नहीं जा सका: {error}",
+  "This device's clipboard holds no text to paste.": "इस डिवाइस के क्लिपबोर्ड में पेस्ट करने के लिए कोई टेक्स्ट नहीं है।",
   "This file may contain secrets (DB passwords, API keys). View-only — Submarine never edits compose files.": "इस फ़ाइल में गोपनीय जानकारी (DB पासवर्ड, API कुंजियाँ) हो सकती है। सिर्फ़ देखने के लिए — Submarine कभी Compose फ़ाइलें एडिट नहीं करता।",
   "This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.": "इस होस्ट को दोबारा इस्तेमाल के लिए सबसे ऊपरी स्तर पर एक सर्वर के रूप में सेव किया जाता है। सर्वर सूची से इसे कभी भी एडिट करें या हटाएँ।",
   "This is a link: these are the settings of the file it points to, and changes apply to that file.": "यह एक लिंक है: ये उस फ़ाइल की सेटिंग्स हैं जिसकी ओर यह इशारा करता है, और बदलाव उसी फ़ाइल पर लागू होते हैं।",

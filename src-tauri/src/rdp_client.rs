@@ -332,6 +332,9 @@ pub enum Cmd {
     /// Text from this computer's clipboard for the server's, then (when the
     /// user pressed a paste key in the tab) that key, once the server has it.
     Paste(Zeroizing<String>, PasteKeys),
+    /// The paste key alone: the server pastes what its clipboard holds (the
+    /// user copied there last, or this device's clipboard has nothing to give).
+    PasteKey(PasteKeys),
     /// This computer's copied files for the server's clipboard: the list the
     /// server is given and the files it names; then the key, as with text.
     PasteFiles(Vec<FileDescriptor>, Arc<Vec<rdp_files::Local>>, PasteKeys),
@@ -445,6 +448,13 @@ fn paste_keys(keys: PasteKeys, held: impl Fn(Scancode) -> bool) -> Vec<Operation
             ops
         }
     }
+}
+
+/// The paste key pressed on the server now (see `paste_keys`).
+fn press_paste(keys: PasteKeys, db: &mut Database, stage: &mut ActiveStage, image: &mut DecodedImage) -> Result<Vec<ActiveStageOutput>, String> {
+    let ops = paste_keys(keys, |k| db.is_key_pressed(k));
+    let fast = db.apply(ops).into_vec();
+    stage.process_fastpath_input(image, &fast).map_err(|e| format!("RDP: {e}"))
 }
 
 /// What the clipboard channel tells the session loop (`ClipBridge`).
@@ -1340,8 +1350,9 @@ fn operations(events: Vec<InputEvent>) -> Vec<Operation> {
 /// there, told whether the login was NLA (then the server took the password;
 /// without NLA it shows its own login screen whatever was sent); `frame`
 /// sends one frame to the page and says whether the page is still
-/// listening; `remote_copy` gets the text the user copied on the server
-/// (with the clipboard shared), `remote_files` what becomes of the files the
+/// listening; `remote_copy` is told when the user copies on the server
+/// (with the clipboard shared), and given the copy's text once it is here
+/// (none: it has no text, an image or files), `remote_files` what becomes of the files the
 /// user copied there (with `Login::files_dir`); `link` gets how the link is
 /// doing, every `LINK_EVERY` once the desktop is there. Returns why the
 /// session ended.
@@ -1354,7 +1365,7 @@ pub async fn run<S, V, VF>(
     connected: impl FnOnce(u16, u16, bool),
     notice: impl Fn(&str),
     frame: impl Fn(Vec<u8>) -> bool,
-    remote_copy: impl Fn(String),
+    remote_copy: impl Fn(Option<String>),
     remote_files: impl Fn(Note),
     link: impl Fn(LinkStats),
     flow: Arc<crate::screen_flow::Flow>,
@@ -1515,10 +1526,15 @@ where
     let mut local_text: Option<Zeroizing<String>> = None;
     let mut asked: VecDeque<AskedFor> = VecDeque::new();
     let mut held_paste: Option<(PasteKeys, tokio::time::Instant)> = None;
+    // This side's list of what it offers replaces what the server's clipboard
+    // holds, the first one (nothing) too. A copy the server tells of before
+    // it answered the list was made before, and is gone: it is passed over.
+    let mut clip_ready = false;
     // The server's copies reach the tab at most every COPY_EVERY, the latest
     // one winning, and what goes wrong with them is said once: a small PDU from
     // the server is enough for either, and neither is under the frames' flow control.
-    let mut copies = Copies::default();
+    // A copy is told at once, and its text (if any) once it is here.
+    let mut copies: Copies<Option<String>> = Copies::default();
     let mut copy_tick = tokio::time::interval(COPY_EVERY);
     copy_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let (mut said_clip_failed, mut said_too_long, mut said_list_unread) = (false, false, false);
@@ -1559,13 +1575,16 @@ where
             tokio::select! {
                 Some(event) = next_clip_event(&mut clip_events) => match event {
                     ClipEvent::FormatListWanted => {
-                        match file_clip.as_mut().and_then(|fc| fc.offer_again(&mut stage, &notice, &remote_files)) {
-                            Some(outputs) => outputs,
-                            None => offer_text(&mut stage, local_text.is_some()).unwrap_or_else(|e| {
-                                once(&mut said_clip_failed, &e);
-                                Vec::new()
-                            }),
-                        }
+                        let offered = match file_clip.as_mut().and_then(|fc| fc.offer_again(&mut stage, &notice, &remote_files)) {
+                            Some(outputs) => Ok(outputs),
+                            None => offer_text(&mut stage, local_text.is_some()),
+                        };
+                        // Not sent: nothing replaces the server's clipboard.
+                        clip_ready = offered.is_err();
+                        offered.unwrap_or_else(|e| {
+                            once(&mut said_clip_failed, &e);
+                            Vec::new()
+                        })
                     }
                     ClipEvent::Caps(caps) => {
                         if let Some(fc) = &mut file_clip {
@@ -1577,6 +1596,7 @@ where
                     // key goes now. Refused, it would paste what the server had
                     // before: it doesn't.
                     ClipEvent::Offered(taken) => {
+                        clip_ready = true;
                         let files = file_clip.as_ref().is_some_and(|fc| fc.offered.is_some());
                         if !taken {
                             if let Some(fc) = &mut file_clip {
@@ -1584,11 +1604,7 @@ where
                             }
                         }
                         match held_paste.take() {
-                            Some((keys, _)) if taken => {
-                                let ops = paste_keys(keys, |k| db.is_key_pressed(k));
-                                let fast = db.apply(ops).into_vec();
-                                stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
-                            }
+                            Some((keys, _)) if taken => press_paste(keys, &mut db, &mut stage, &mut image)?,
                             Some(_) => {
                                 notice(if files {
                                     "The server didn't take this device's files, so nothing was pasted."
@@ -1600,9 +1616,13 @@ where
                             None => Vec::new(),
                         }
                     }
+                    ClipEvent::RemoteCopy { .. } if !clip_ready => Vec::new(),
                     // Files go before text: a copy that has both is mostly
-                    // files with their names as text.
+                    // files with their names as text. The tab hears of any
+                    // copy at once (an image too): its paste key then needs
+                    // nothing from this device (see util/rdpClipboard.ts).
                     ClipEvent::RemoteCopy { text, files } => {
+                        copies.due = Some(None);
                         if let Some(fc) = &mut file_clip {
                             fc.outdated(&remote_files);
                         }
@@ -1703,7 +1723,7 @@ where
                                     _ => ClipboardFormatId::CF_UNICODETEXT,
                                 };
                                 match decode_clip_text(format, &data) {
-                                    Ok(text) if !text.is_empty() => copies.due = Some(text),
+                                    Ok(text) if !text.is_empty() => copies.due = Some(Some(text)),
                                     Ok(_) => {}
                                     Err(e) => once(&mut said_too_long, &e),
                                 }
@@ -1724,8 +1744,8 @@ where
                     })
                 }
                 _ = copy_tick.tick(), if copies.due.is_some() => {
-                    if let Some(text) = copies.take(std::time::Instant::now()) {
-                        remote_copy(text);
+                    if let Some(copy) = copies.take(std::time::Instant::now()) {
+                        remote_copy(copy);
                     }
                     Vec::new()
                 }
@@ -1754,9 +1774,7 @@ where
                 // The server didn't say it has the text in time: the key goes anyway.
                 _ = sleep_until_due(paste_due), if paste_due.is_some() => {
                     let keys = held_paste.take().map_or(PasteKeys::None, |(keys, _)| keys);
-                    let ops = paste_keys(keys, |k| db.is_key_pressed(k));
-                    let fast = db.apply(ops).into_vec();
-                    stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
+                    press_paste(keys, &mut db, &mut stage, &mut image)?
                 }
                 pdu = reader.read_pdu() => {
                     let (action, payload) = pdu.map_err(link_ended)?;
@@ -1839,6 +1857,7 @@ where
                             Vec::new()
                         })
                     }
+                    Some(Cmd::PasteKey(keys)) => press_paste(keys, &mut db, &mut stage, &mut image)?,
                     Some(Cmd::Resize(w, h)) => {
                         let (w, h) = clamp_size(w, h);
                         if paused {

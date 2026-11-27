@@ -1972,6 +1972,7 @@
   "This deletes {email} on {host} and everything stored for it there: the cloud copies of your profiles, your sharing key, and every profile you shared (the people you shared it with lose access). The profiles on your devices are not touched. This can't be undone.": "{host}上のアカウント{email}と、そこに保存されているすべてのデータを削除します：プロファイルのクラウド上のコピー、共有用の鍵、共有したすべてのプロファイル（共有相手はアクセスできなくなります）。お使いのデバイス上のプロファイルには影響しません。この操作は元に戻せません。",
   "This device → server": "このデバイス → サーバー",
   "This device's clipboard couldn't be read: {error}": "このデバイスのクリップボードを読み取れませんでした：{error}",
+  "This device's clipboard holds no text to paste.": "このデバイスのクリップボードには貼り付けるテキストがありません。",
   "This file may contain secrets (DB passwords, API keys). View-only — Submarine never edits compose files.": "このファイルには機密情報（DBのパスワード、APIキー）が含まれている可能性があります。表示のみで、SubmarineがComposeファイルを編集することはありません。",
   "This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.": "このホストは再利用できるよう、最上位にサーバーとして保存されます。サーバー一覧からいつでも編集・削除できます。",
   "This is a link: these are the settings of the file it points to, and changes apply to that file.": "これはリンクです。表示されているのはリンク先のファイルの設定で、変更はそのファイルに適用されます。",
