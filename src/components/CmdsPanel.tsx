@@ -424,6 +424,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         value={target.title}
         onChange={(e) => setEdit({ ...target, title: e.target.value })}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
         }}
         placeholder={t("Title")}
@@ -435,6 +436,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           value={target.body}
           onChange={(v) => setEdit({ ...target, body: v })}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
             if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
           }}
@@ -448,6 +450,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           value={target.body}
           onChange={(e) => setEdit({ ...target, body: e.target.value })}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
             if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
           }}
@@ -842,7 +845,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                           </button>
                         )}
                         <button
-                          onClick={() => beginEditCommand(c)}
+                          onClick={async () => {
+                            // The command being typed is saved first; if that
+                            // fails, its editor stays open.
+                            if (await flushIfDirty(editRef.current)) beginEditCommand(c);
+                          }}
                           className="flex-1 h-7 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
                           title={t("Edit command inline")}
                         >

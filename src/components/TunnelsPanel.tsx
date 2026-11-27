@@ -338,6 +338,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
               aria-label={t("Forward name")}
               onChange={(e) => setRenaming({ key, value: e.target.value })}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "Enter") finishRename(rule!);
                 else if (e.key === "Escape") setRenaming(null);
               }}
