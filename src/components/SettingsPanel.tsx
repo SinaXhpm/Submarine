@@ -218,6 +218,33 @@ function ProgramTitlesSetting({ settings, setSettings }: any) {
   );
 }
 
+// "Show recent servers" (util/recentServers). On by default. Off, the lists
+// kept on this device are deleted and no new ones are kept.
+function RecentServersSetting({ settings, setSettings }: any) {
+  const t = useT();
+  const on = settings.showRecentServers !== false;
+  return (
+    <div className="bg-shade-121215 border border-white/5 rounded-2xl p-6 shadow-xl">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-zinc-100">{t("Show recent servers")}</div>
+          <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+            {t("A row at the bottom of the Servers page with the last 10 servers you connected to. The list is kept on this device only. Off, the list is deleted and no new one is kept.")}
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={on}
+          aria-label={t("Show recent servers")}
+          onClick={() => setSettings((s: any) => ({ ...s, showRecentServers: !(s.showRecentServers !== false) }))}
+          className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${on ? 'bg-primary' : 'bg-zinc-700'}`}
+        >
+          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-knob transition-all ${on ? 'left-[22px]' : 'left-0.5'}`} />
+        </button>
+      </div>
+    </div>
+  );
+}
 // "Send keepalives" and "Reconnect automatically" (util/sessionKeep).
 function SessionKeepSettings({ settings, setSettings }: any) {
   const t = useT();
@@ -1131,6 +1158,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
           </div>
 
           <SessionKeepSettings settings={settings} setSettings={setSettings} />
+          <RecentServersSetting settings={settings} setSettings={setSettings} />
         </section>
 
         {/* Not on a phone or tablet, which has no ssh-agent or ~/.ssh/config to use. */}
