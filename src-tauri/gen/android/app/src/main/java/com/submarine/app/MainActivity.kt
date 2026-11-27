@@ -103,6 +103,18 @@ class MainActivity : TauriActivity() {
     notificationsQuestion.launch(Manifest.permission.POST_NOTIFICATIONS)
   }
 
+  // Back on the first page sends the app to the background, as Android 12+
+  // does by itself. Android 7-11 would finish the Activity instead, and
+  // onDestroy below stops the keeper, so open connections could drop.
+  // Tauri's own back handlers (page history, the `back-button` event)
+  // switch themselves off and call this when they have nothing to do, so
+  // the move happens only once none of them is left.
+  @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+  override fun onBackPressed() {
+    if (onBackPressedDispatcher.hasEnabledCallbacks()) super.onBackPressed()
+    else moveTaskToBack(true)
+  }
+
   // Explicitly stop the keeper when the Activity finishes. Android will
   // also tear the service down when the process dies (e.g. user swipes
   // the app away), but stopping it on the ordinary destroy path removes

@@ -61,7 +61,7 @@
             tauri.conf.json today.
         -->
         <activity
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:configChanges="orientation|keyboardHidden|keyboard|navigation|touchscreen|screenSize|locale|layoutDirection|smallestScreenSize|screenLayout|uiMode|density|fontScale|fontWeightAdjustment"
             android:launchMode="singleTask"
             android:label="@string/main_activity_title"
             android:name=".MainActivity"

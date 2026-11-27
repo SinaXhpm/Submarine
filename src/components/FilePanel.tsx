@@ -953,7 +953,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           }
         }
         if (cancelled) notify(count > 0 ? t("Upload stopped after {count} of {total} items", { count, total: paths.length }) : t("Upload batch cancelled"), "info");
-        await fetch(dir);
+        // Only if the pane is still there: the user may have moved on.
+        await refreshAfterJob(dir);
       }
     ).then((fn) => { unlisten = fn; });
     return () => { if (unlisten) unlisten(); };
@@ -1071,7 +1072,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (chmodded) await provider.chmod(entry.path, mode);
         notify(chowned || chmodded ? t("Properties updated") : t("Nothing changed"), chowned || chmodded ? "success" : "info");
       }
-      await fetch(currentPath);
+      await refreshAfterJob(currentPath);
     } catch (err: any) {
       notify(t("Failed: {error}", { error: String(err) }), "error");
     } finally {
@@ -1151,8 +1152,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       notify(items.length === 1 ? t("Deleted {name}", { name: items[0].name }) : t("Deleted {count} of {total} items", { count, total: items.length }), "success");
     }
     // A folder that could not be removed completely, or whose delete was
-    // stopped, may have lost part of its contents: show what is there now.
-    await fetch(currentPath);
+    // stopped, may have lost part of its contents: show what is there now,
+    // if the pane is still there.
+    await refreshAfterJob(currentPath);
   };
 
   // ---- archive and extract ------------------------------------------------------
@@ -2122,6 +2124,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               }, 250);
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "Enter") {
                 e.preventDefault();
                 if (activeSuggestion >= 0 && activeSuggestion < suggestions.length) {
@@ -2686,7 +2689,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     <input type="text" autoFocus value={modal.v1 || ""}
                       onFocus={(e) => e.currentTarget.select()}
                       onChange={(e) => setModal({ ...modal, v1: e.target.value })}
-                      onKeyDown={(e) => e.key === "Enter" && submitModal()}
+                      onKeyDown={(e) => e.key === "Enter" && !(e.nativeEvent.isComposing || e.keyCode === 229) && submitModal()}
                       className="w-full h-7 px-2 bg-white/5 border border-white/5 rounded text-zinc-200 focus:outline-none focus:border-indigo-400/40 text-[11.5px] font-mono" />
                   </div>
                   <div>
@@ -2719,7 +2722,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   </label>
                   <input type="text" autoFocus value={modal.v1 || ""}
                     onChange={(e) => setModal({ ...modal, v1: e.target.value })}
-                    onKeyDown={(e) => e.key === "Enter" && submitModal()}
+                    onKeyDown={(e) => e.key === "Enter" && !(e.nativeEvent.isComposing || e.keyCode === 229) && submitModal()}
                     className="w-full h-7 px-2 bg-white/5 border border-white/5 rounded text-zinc-200 focus:outline-none focus:border-indigo-400/40 text-[11.5px] font-mono" />
                 </div>
               )}

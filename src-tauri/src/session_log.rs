@@ -21,10 +21,10 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The file name used when Settings has none: the server's name, then the date
@@ -240,18 +240,65 @@ impl Drop for SessionLog {
     }
 }
 
-fn open(target: &Target) -> std::io::Result<File> {
-    if let Some(parent) = target.path.parent() {
+/// The files the running logs write to, and whether each adds to its file. A
+/// log takes another name while another log of this app writes its file,
+/// unless both add to it: two terminals of one server opened in the same
+/// second get one name from the default pattern, and the second would empty
+/// the first one's log and write over it.
+static WRITING: Mutex<Vec<(PathBuf, bool)>> = Mutex::new(Vec::new());
+
+/// The file a running log writes to. Dropping it frees the name.
+struct Writing(PathBuf);
+
+impl Writing {
+    /// The log's own name, or "name (2).log" and so on while another log
+    /// writes that file.
+    fn claim(path: &Path, append: bool) -> Writing {
+        let mut writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut chosen = path.to_path_buf();
+        let mut n = 2;
+        while writing.iter().any(|(p, a)| *p == chosen && !(append && *a)) {
+            chosen = numbered(path, n);
+            n += 1;
+        }
+        writing.push((chosen.clone(), append));
+        Writing(chosen)
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        let mut writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        // Logs share a file only when all of them add to it, so any entry
+        // for it will do.
+        if let Some(i) = writing.iter().position(|(p, _)| *p == self.0) {
+            writing.swap_remove(i);
+        }
+    }
+}
+
+/// `name.log` as `name (n).log`.
+fn numbered(path: &Path, n: usize) -> PathBuf {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let name = match path.extension() {
+        Some(ext) => format!("{stem} ({n}).{}", ext.to_string_lossy()),
+        None => format!("{stem} ({n})"),
+    };
+    path.with_file_name(name)
+}
+
+fn open(path: &Path, append: bool) -> std::io::Result<File> {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let mut options = OpenOptions::new();
     options.create(true);
-    if target.append {
+    if append {
         options.append(true);
     } else {
         options.write(true).truncate(true);
     }
-    options.open(&target.path)
+    options.open(path)
 }
 
 fn skipped_note(bytes: usize) -> String {
@@ -260,15 +307,18 @@ fn skipped_note(bytes: usize) -> String {
 }
 
 fn run(target: Target, rx: Receiver<Msg>, left: Arc<AtomicUsize>, report: impl Fn(Event)) {
-    let shown = target.path.display().to_string();
-    let mut file = match open(&target) {
+    // Held while the log runs.
+    let writing = Writing::claim(&target.path, target.append);
+    let path = &writing.0;
+    let shown = path.display().to_string();
+    let mut file = match open(path, target.append) {
         Ok(f) => f,
         Err(e) => {
             report(Event::Failed(format!("Couldn't open the session log {shown}: {e}")));
             return;
         }
     };
-    report(Event::Opened(target.path.clone()));
+    report(Event::Opened(path.clone()));
     let mut text = TextLog::default();
     let mut out: Vec<u8> = target.header.clone().into_bytes();
     loop {
@@ -337,7 +387,13 @@ struct TextLog {
     cursor: usize,
     /// The bytes of a character split across reads.
     utf8: Vec<u8>,
+    /// The parameter and intermediate bytes of the CSI sequence being read,
+    /// up to [`CSI_MAX`].
+    csi: Vec<u8>,
 }
+
+/// A CSI sequence this long or longer is none of the ones that change the line.
+const CSI_MAX: usize = 16;
 
 impl TextLog {
     fn has_open_line(&self) -> bool {
@@ -357,6 +413,7 @@ impl TextLog {
         match self.state {
             State::Ground => self.ground(b, out),
             State::Esc => {
+                self.csi.clear();
                 self.state = match b {
                     b'[' => State::Csi,
                     b']' | b'P' | b'X' | b'^' | b'_' => State::Str,
@@ -371,10 +428,15 @@ impl TextLog {
                 }
             }
             State::Csi => {
-                if (0x40..=0x7e).contains(&b) || cancel {
+                if (0x40..=0x7e).contains(&b) {
+                    self.state = State::Ground;
+                    self.csi(b);
+                } else if cancel {
                     self.state = State::Ground;
                 } else if b == ESC {
                     self.state = State::Esc;
+                } else if (0x20..=0x3f).contains(&b) && self.csi.len() < CSI_MAX {
+                    self.csi.push(b);
                 }
             }
             State::Str => {
@@ -436,10 +498,50 @@ impl TextLog {
         }
     }
 
+    /// The CSI sequences that change the line as a terminal shows it: erases
+    /// (`K`, `X`), deletes (`P`), inserts (`@`) and moves on the line (`C`,
+    /// `D`, `G`). A shell uses them to edit what was typed and to redraw a
+    /// command recalled over a longer one. Others (colors, modes, the screen)
+    /// change nothing here, nor do ones with a private marker (`?`), an
+    /// intermediate byte or more than one number.
+    fn csi(&mut self, fin: u8) {
+        if self.csi.len() >= CSI_MAX || !self.csi.iter().all(u8::is_ascii_digit) {
+            return;
+        }
+        // No number is 0, as is one too big to read; a count of 0 is 1.
+        let n = std::str::from_utf8(&self.csi).ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(0).min(MAX_LINE);
+        let count = n.max(1);
+        let len = self.line.len();
+        let end = (self.cursor + count).min(len);
+        match fin {
+            b'K' => match n {
+                0 => self.line.truncate(self.cursor),
+                1 => self.line[..(self.cursor + 1).min(len)].fill(' '),
+                2 => self.line.fill(' '),
+                _ => {}
+            },
+            b'X' if self.cursor < end => self.line[self.cursor..end].fill(' '),
+            b'P' if self.cursor < end => {
+                self.line.drain(self.cursor..end);
+            }
+            b'@' if self.cursor < len => {
+                self.line.splice(self.cursor..self.cursor, std::iter::repeat_n(' ', count));
+                // What moves past the end is lost, as at a screen's edge.
+                self.line.truncate(MAX_LINE - 1);
+            }
+            b'C' => self.cursor = (self.cursor + count).min(MAX_LINE - 1),
+            b'D' => self.cursor = self.cursor.saturating_sub(count),
+            b'G' => self.cursor = (count - 1).min(MAX_LINE - 1),
+            _ => {}
+        }
+    }
+
     fn put(&mut self, c: char, out: &mut Vec<u8>) {
         if self.cursor < self.line.len() {
             self.line[self.cursor] = c;
         } else {
+            // After a move past the end (`CSI C`, `CSI G`): spaces up to here.
+            self.line.resize(self.cursor, ' ');
             self.line.push(c);
         }
         self.cursor += 1;
@@ -545,6 +647,42 @@ mod tests {
     }
 
     #[test]
+    fn text_follows_erases_and_moves_on_the_line() {
+        // A command recalled over a longer one: the rest is erased.
+        assert_eq!(text(&[b"$ ls -la\r$ pwd\x1b[K\r\n"]), "$ pwd\n");
+        assert_eq!(text(&[b"$ lsx\x08\x1b[K\r\n"]), "$ ls\n");
+        // Erased up to the cursor, all of it, some characters.
+        assert_eq!(text(&[b"abcdef\x08\x08\x1b[1K\n"]), "     f\n");
+        assert_eq!(text(&[b"abc\x1b[2K\rxy\n"]), "xy\n");
+        assert_eq!(text(&[b"abcdef\r\x1b[2X\n"]), "  cdef\n");
+        // A character deleted, one put in, mid-line.
+        assert_eq!(text(&[b"$ lxs\x08\x08\x1b[P\r\n"]), "$ ls\n");
+        assert_eq!(text(&[b"$ ls\x08\x1b[@a\r\n"]), "$ las\n");
+        // Moves on the line, past its end too.
+        assert_eq!(text(&[b"a\x1b[3Cb\n"]), "a   b\n");
+        assert_eq!(text(&[b"abc\x1b[2Dx\n"]), "axc\n");
+        assert_eq!(text(&[b"abc\x1b[Gx\x1b[5Gy\n"]), "xbc y\n");
+        // Split across reads.
+        assert_eq!(text(&[b"$ ls -la\r$ pwd\x1b", b"[", b"K\n"]), "$ pwd\n");
+        // Colors, private modes and the like change nothing.
+        assert_eq!(text(&[b"ab\x1b[?1Kc\x1b[1;31mK\x1b[2 q\n"]), "abcK\n");
+    }
+
+    #[test]
+    fn huge_counts_stay_within_a_line() {
+        let mut log = TextLog::default();
+        let mut out = Vec::new();
+        log.feed(b"ab\r", &mut out);
+        for _ in 0..100 {
+            log.feed(b"\x1b[16384@\x1b[99999C", &mut out);
+        }
+        assert!(log.line.len() < MAX_LINE && log.cursor < MAX_LINE);
+        // Too long to be one of the sequences: left out.
+        log.feed(b"\r\x1b[99999999999999999999Cz", &mut out);
+        assert_eq!(log.line[0], 'z');
+    }
+
+    #[test]
     fn text_keeps_utf8_split_across_reads() {
         let s = "héllo → 日本\n".as_bytes();
         assert_eq!(text(&[&s[..2], &s[2..9], &s[9..]]), "héllo → 日本\n");
@@ -592,6 +730,53 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "=== h ===\n\x1b[31mone\r\ntwo=== h ===\nthree\n$ ");
         run_log(t(Mode::Text, false), &[b"four\n"]);
         assert_eq!(fs::read_to_string(&path).unwrap(), "=== h ===\nfour\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_log_started_again_takes_another_name_while_one_writes_it() {
+        let dir = temp_dir("taken");
+        let path = dir.join("s.log");
+        let a = Writing::claim(&path, false);
+        let b = Writing::claim(&path, false);
+        assert_eq!(a.0, path);
+        assert_eq!(b.0, dir.join("s (2).log"));
+        // Adding to a file another log starts again: another name too.
+        let c = Writing::claim(&path, true);
+        assert_eq!(c.0, dir.join("s (3).log"));
+        drop(a);
+        // Logs that add to one file share it.
+        let d = Writing::claim(&path, true);
+        let e = Writing::claim(&path, true);
+        assert_eq!((d.0.clone(), e.0.clone()), (path.clone(), path.clone()));
+        assert_eq!(Writing::claim(&path, false).0, dir.join("s (4).log"));
+        drop((b, c, d, e));
+        // Once none writes it, a log starts the file again under its own name.
+        assert_eq!(Writing::claim(&path, false).0, path);
+        assert_eq!(numbered(Path::new("logs/session"), 2), Path::new("logs/session (2)"));
+    }
+
+    #[test]
+    fn two_logs_of_one_name_at_once_keep_their_own_files() {
+        let dir = temp_dir("twice");
+        let path = dir.join("s.log");
+        let t = || Target { mode: Mode::Text, path: path.clone(), append: false, header: String::new() };
+        let (tx, rx) = mpsc::channel();
+        let tx2 = tx.clone();
+        let (mut one, first) = SessionLog::start_with(t(), QUEUE, move |e| tx.send(e).unwrap());
+        // The first has its file before the second starts.
+        let opened_first = rx.recv().unwrap();
+        let (mut two, second) = SessionLog::start_with(t(), QUEUE, move |e| tx2.send(e).unwrap());
+        let opened_second = rx.recv().unwrap();
+        assert_eq!(opened_first, Event::Opened(path.clone()));
+        assert_eq!(opened_second, Event::Opened(dir.join("s (2).log")));
+        one.write(b"one\n");
+        two.write(b"two\n");
+        drop((one, two));
+        first.unwrap().join().unwrap();
+        second.unwrap().join().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "one\n");
+        assert_eq!(fs::read_to_string(dir.join("s (2).log")).unwrap(), "two\n");
         let _ = fs::remove_dir_all(&dir);
     }
 

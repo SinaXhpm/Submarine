@@ -749,7 +749,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       title: containerName.length > 10 ? `${containerName.slice(0, 9)}…` : containerName,
       container: { name: containerName, useSudo },
     }]);
-    setActiveTab(newId);
+    showTab(newId);
     setActiveTool(null);
   };
 
@@ -781,7 +781,9 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
         ownLogin: ownLoginDefault,
       },
     ]);
-    setActiveTab(newId);
+    showTab(newId);
+  // showTab reads the split through a ref and calls only state setters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id, ownLoginDefault]);
   // SFTP's Follow, and the folder each terminal's shell last reported (a
   // container's terminal reports none: its folders aren't the server's).
@@ -1027,6 +1029,18 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // panes redistributes those two panes' share and leaves the rest
   // alone. Reset (double-click a divider) flattens back to all-equal.
   const [splitRatios, setSplitRatios] = useState<number[]>([]);
+  const splitRef = useRef(splitTerminals);
+  splitRef.current = splitTerminals;
+  // A terminal outside the split can't be seen while the split is on, so
+  // opening one (+, the shortcut, its own login, a container's, the AI's)
+  // leaves the split, as a click on its tab does. The terminals stay open.
+  const showTab = (id: string) => {
+    if (splitRef.current.length >= 2 && !splitRef.current.includes(id)) {
+      setSplitTerminals([]);
+      setSplitRatios([]);
+    }
+    setActiveTab(id);
+  };
   const closeTerminal = useCallback((terminalId: string) => {
     // Closing the only terminal closes the complete session.
     if (terminals.length <= 1) {
@@ -1215,7 +1229,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   const insertTarget = terminals.some(t => t.id === userTab && !t.ai) ? userTab : (terminals.find(t => !t.ai)?.id ?? null);
   const showAiTerminal = useCallback(() => {
     setTerminals(prev => (prev.some(t => t.id === aiTermId) ? prev : [...prev, { id: aiTermId, title: 'AI', ai: true }]));
-    setActiveTab(aiTermId);
+    showTab(aiTermId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiTermId]);
   // The AI terminal's Ctrl+C stops every run that acts through this session,
   // the AI tab's and the AI page's alike.
@@ -2322,7 +2337,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                     closePlusMenu();
                     const newId = `${session.id}-term-${Date.now()}`;
                     setTerminals(prev => [...prev, { id: newId, title: nextTerminalNumber(prev), ownLogin: true }]);
-                    setActiveTab(newId);
+                    showTab(newId);
                   }}
                   className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-200 hover:text-white text-left"
                 >

@@ -160,29 +160,17 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
   const [draft, setDraft] = useState<MirrorSpec>(BLANK_MIRROR);
   const [excludesText, setExcludesText] = useState("");
   const [includesText, setIncludesText] = useState("");
-  // Mirrors saved into the profile *during this session* — kept here so the
-  // "Saved on this node" group lights up immediately without waiting for the
-  // user to close + reopen the session for the props-level configuredMirrors
-  // to refresh from DesktopApp's servers state.
-  const [extraSaved, setExtraSaved] = useState<MirrorSpec[]>([]);
-  // Merged view of the two saved sources, dedup-ed by (local, remote) —
-  // matches the backend's coalescing rule so the UI never double-lists a
-  // mirror that the user just re-saved with updated excludes / conflict mode.
-  const allSavedMirrors = (() => {
-    const k = (m: MirrorSpec) => `${m.local}|${m.remote}`;
-    const out: MirrorSpec[] = configuredMirrors.map(normalizeMirror);
-    for (const m of extraSaved) {
-      const idx = out.findIndex(x => k(x) === k(m));
-      if (idx >= 0) out[idx] = m; else out.push(m);
-    }
-    return out;
-  })();
+  // The server row's mirrors as they are now: DesktopApp passes the row down
+  // again after the panel saves one (serverRowChanged) and after the server
+  // form or a sync changes them.
+  const allSavedMirrors: MirrorSpec[] = configuredMirrors.map(normalizeMirror);
   // Map from configured-mirror index (by `local|remote` key) to the live
   // mirror id while it's running. Lets us show Start vs Stop on each row
   // without scanning statuses every render.
   const [runningByPair, setRunningByPair] = useState<Record<string, string>>({});
   // Active dry-run preview waiting for the user to confirm or cancel.
-  const [pending, setPending] = useState<{ spec: MirrorSpec; report: DryRunReport } | null>(null);
+  // `fromForm`: started from "New mirror", not from a saved row.
+  const [pending, setPending] = useState<{ spec: MirrorSpec; report: DryRunReport; fromForm: boolean } | null>(null);
   const [working, setWorking] = useState(false);
   const logScrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -270,7 +258,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
     } catch (e: any) { setError(String(e)); }
   };
 
-  const askPreviewThenStart = async (spec: MirrorSpec) => {
+  const askPreviewThenStart = async (spec: MirrorSpec, fromForm: boolean) => {
     if (working) return;
     setWorking(true); setError(null);
     try {
@@ -279,7 +267,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       // the preview/start round-trip carries a value the UI can also display.
       const norm: MirrorSpec = { ...spec, conflict_resolution: spec.conflict_resolution || "local" };
       const report: DryRunReport = await invoke("mirror_dry_run", { sessionId, spec: norm });
-      setPending({ spec: norm, report });
+      setPending({ spec: norm, report, fromForm });
     } catch (e: any) {
       setError(String(e));
     } finally {
@@ -293,34 +281,33 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
     setWorking(true); setError(null);
     try {
       await invoke("start_mirror", { sessionId, spec: pending.spec, once });
-      // Persist into the saved-node row (serverId > 0 means this isn't a
-      // quick-connect; backend coalesces by local|remote so re-saving an
-      // existing pair just updates its excludes/conflict mode in place).
+      // A mirror from the form goes into the saved-node row (serverId > 0
+      // means this isn't a quick-connect; backend coalesces by local|remote
+      // so re-saving an existing pair just updates its excludes/conflict
+      // mode in place). A saved row is not written again: it is the row.
       // Persistence failure is non-fatal — the mirror is already running;
       // we just surface the error so the user knows it didn't reach the
       // profile.
-      if (serverId > 0) {
+      if (serverId > 0 && pending.fromForm) {
         try {
           await invoke("add_mirror_to_server", { serverId, mirror: pending.spec });
           serverRowChanged();
-          setExtraSaved(prev => {
-            const k = (m: MirrorSpec) => `${m.local}|${m.remote}`;
-            const without = prev.filter(m => k(m) !== k(pending.spec));
-            return [...without, pending.spec];
-          });
         } catch (e: any) {
           setError(t("Mirror started but not saved to profile: {error}", { error: String(e) }));
         }
       }
-      // Mirror is now spawned — collapse the preview, close the ad-hoc
-      // form, and reset the draft inputs. The newly-started mirror takes
-      // over as a live status row in the list below, which is what the
-      // user wants to see while initial sync runs.
+      // Mirror is now spawned — collapse the preview. One from the form
+      // closes it and resets its inputs; a saved row's start leaves what is
+      // being typed there alone. The newly-started mirror takes over as a
+      // live status row in the list below, which is what the user wants to
+      // see while initial sync runs.
       setPending(null);
-      setAdding(false);
-      setDraft(BLANK_MIRROR);
-      setExcludesText("");
-      setIncludesText("");
+      if (pending.fromForm) {
+        setAdding(false);
+        setDraft(BLANK_MIRROR);
+        setExcludesText("");
+        setIncludesText("");
+      }
     } catch (e: any) {
       setError(String(e));
     } finally {
@@ -372,7 +359,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
     const remote = draft.remote.trim();
     if (!local || !remote) { setError(t("Local and remote paths are required.")); return; }
     const lines = (text: string) => text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    askPreviewThenStart({ ...draft, local, remote, excludes: lines(excludesText), includes: lines(includesText) });
+    askPreviewThenStart({ ...draft, local, remote, excludes: lines(excludesText), includes: lines(includesText) }, true);
   };
 
   const patternHelp = t("A name with * or ? is a pattern (*.sql, v?.txt). With a / it starts at the mirrored folder (db/*.sql), and a / at the end means folders only (cache/). Other text is found anywhere in the path.");
@@ -671,7 +658,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                       </button>
                     )}
                     <button
-                      onClick={() => askPreviewThenStart(m)}
+                      onClick={() => askPreviewThenStart(m, false)}
                       title={m.direction === "download" ? t("Run once") : t("Start mirror")}
                       className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-emerald-400 shrink-0"
                     >

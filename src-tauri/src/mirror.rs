@@ -696,6 +696,42 @@ async fn sftp_soft_delete(sftp: &SftpSession, remote_root: &str, target: &str) -
     Ok(())
 }
 
+/// The first thing in a server folder the mirror doesn't copy, by its path
+/// below the mirror's root: what the filter skips or "Only these" leaves out,
+/// a link or an entry of no type, or a folder that won't list (or is too big
+/// to look through). A soft delete moves a folder into the trash whole, so
+/// only a folder that is all the mirror's.
+async fn not_copied_inside(sftp: &SftpSession, remote_root: &str, folder: &str, filter: &Filter) -> Option<String> {
+    let prefix = format!("{}/", remote_root.trim_end_matches('/'));
+    let rel_of = |path: &str| path.strip_prefix(&prefix).unwrap_or(path).to_string();
+    let mut entries = 0usize;
+    let mut path_bytes = 0usize;
+    let mut stack = vec![(folder.to_string(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if walk_refused(depth, entries, path_bytes).is_some() {
+            return Some(rel_of(&dir));
+        }
+        let Ok(read) = crate::sftp_listing::read_dir(sftp, &dir).await else {
+            return Some(rel_of(&dir));
+        };
+        for entry in read {
+            entries = entries.saturating_add(1);
+            let name = entry.file_name();
+            if !crate::is_safe_dir_entry_name(&name) { continue; }
+            let path = format!("{}/{}", dir.trim_end_matches('/'), name);
+            let rel = rel_of(&path);
+            let kind = entry.file_type();
+            if kind.is_dir() && !filter.skips(&rel, true) {
+                path_bytes = path_bytes.saturating_add(path.len());
+                stack.push((path, depth + 1));
+            } else if !(kind.is_file() && filter.takes(&rel, false)) {
+                return Some(rel);
+            }
+        }
+    }
+    None
+}
+
 /// What the server said, once. OpenSSH's message is the status's own name,
 /// so the error's "code: message" reads "Permission denied: Permission
 /// denied".
@@ -879,12 +915,29 @@ pub async fn dry_run(
     let mut tree = RemoteTree { coarse_times: files.coarse_times(), ..RemoteTree::default() };
     walk_remote(&sftp, &spec.remote, &spec.remote, &filter,
                 &mut tree, &mut scanned, &mut HashSet::new(), Tidy::default()).await?;
+    needs_server_folder(direction, &tree, &spec.remote)?;
     walk_local(&local_root, &local_root, &spec.remote, &filter, &sftp,
                direction.conflict_mode(&spec), &tree,
                &mut entries, &mut total_bytes, &mut seen, &mut scanned, &mut Vec::new(), Tidy::default()).await?;
     remote_only(&tree, &filter, &seen, &mut entries, &mut total_bytes);
     one_way(direction, &mut entries, &mut total_bytes);
     Ok(DryRunReport { entries, total_bytes })
+}
+
+/// A copy from the server alone needs the server's folder: without it (a
+/// mistyped path, or one that won't list) the copy would end "done" with
+/// nothing copied.
+fn needs_server_folder(direction: Direction, tree: &RemoteTree, remote: &str) -> Result<(), String> {
+    if direction != Direction::Download {
+        return Ok(());
+    }
+    if tree.no_root {
+        return Err(format!("The server has no folder {}.", remote));
+    }
+    match tree.unlisted.iter().find(|(rel, _)| rel.is_empty()) {
+        Some((_, why)) => Err(format!("Couldn't list the server folder {}: {}", remote, why)),
+        None => Ok(()),
+    }
 }
 
 /// Leaves the moves of a scan that go the mirror's way, and their size.
@@ -1543,6 +1596,11 @@ struct RemoteTree {
     /// What may be there though the walk didn't look: a folder that wouldn't
     /// list (the root as ""), and the trash, which it leaves out.
     unread: HashSet<String>,
+    /// The folders that wouldn't list, other than for not being there, with
+    /// the server's reason. What is in them isn't copied, which a run says.
+    unlisted: Vec<(String, String)>,
+    /// The server has no folder at the root.
+    no_root: bool,
 }
 
 impl RemoteTree {
@@ -1604,8 +1662,12 @@ async fn walk_remote(
             // server said just that, walk_local still asks about its files.
             Err(e @ SftpError::Limited(_)) => return Err(format!("{}: {}", remote_dir, e)),
             Err(e) => {
+                let rel = remote_dir.strip_prefix(&prefix).unwrap_or("").to_string();
                 if !is_no_such_file(&e) {
-                    tree.unread.insert(remote_dir.strip_prefix(&prefix).unwrap_or("").to_string());
+                    tree.unread.insert(rel.clone());
+                    tree.unlisted.push((rel, sftp_reason(&e)));
+                } else if rel.is_empty() {
+                    tree.no_root = true;
                 }
                 continue;
             }
@@ -1687,6 +1749,14 @@ pub async fn start(
     Filter::new(&spec)?;
     if Direction::of(&spec)? == Direction::Download && !once {
         return Err("A mirror from the server to this device runs once: nothing tells it about changes on the server.".into());
+    }
+    // One worker per pair: two would race on the same files and temp names,
+    // and Stop would stop only one of them.
+    for m in map.lock().await.values() {
+        let s = m.status.lock().await;
+        if s.session_id == session_id && s.local == asked_local && s.remote == spec.remote {
+            return Err("This mirror is already running. Stop it first.".into());
+        }
     }
 
     let status = MirrorStatus {
@@ -1875,12 +1945,15 @@ async fn run_mirror(
     let mut scanned = 0u32;
     let mut local_dirs = Vec::new();
     let mut remote_dirs = HashSet::new();
+    let mut unlisted = Vec::new();
     // A big tree over a slow link takes hours, and Stop, Disconnect and Lock
     // all wait for this worker.
     let scan = async {
         let mut tree = RemoteTree { coarse_times, ..RemoteTree::default() };
         walk_remote(&*sftp, &spec.remote, &spec.remote, &filter,
                     &mut tree, &mut scanned, &mut remote_dirs, direction.tidy()).await?;
+        needs_server_folder(direction, &tree, &spec.remote)?;
+        unlisted = std::mem::take(&mut tree.unlisted);
         walk_local(&local_root, &local_root, &spec.remote, &filter,
                    &*sftp, direction.conflict_mode(&spec), &tree,
                    &mut work, &mut total, &mut seen, &mut scanned, &mut local_dirs, direction.tidy()).await?;
@@ -1891,6 +1964,17 @@ async fn run_mirror(
     match unless_stopped(&mut stop_rx, scan).await {
         Some(scanned_all) => scanned_all?,
         None => return Ok(()),
+    }
+    // What is in a server folder that wouldn't list isn't copied: each one
+    // counts as failed, so a run once doesn't end "0 failed" without it.
+    for (rel, why) in &unlisted {
+        let shown = if rel.is_empty() { spec.remote.clone() } else { rel.clone() };
+        emit_log(&app, &session_id, &mirror_id, "warn", "list-fail", Some(shown),
+                 Some(format!("Couldn't list this server folder, so it was left out: {}", why)));
+    }
+    if !unlisted.is_empty() {
+        let mut s = status.lock().await;
+        s.failed = s.failed.saturating_add(unlisted.len().try_into().unwrap_or(u32::MAX));
     }
     // Folders, empty ones too, end up on both sides: one with files would
     // come with its first file anyway, an empty one only this way (the
@@ -2319,7 +2403,18 @@ async fn process_event(
             };
             if !may_delete(filter, &rel, is_dir) { return Ok(Vec::new()); }
             let res = if spec.soft_delete {
-                sftp_soft_delete(sftp, &spec.remote, &remote).await
+                // A folder goes whole, so only one that is all the mirror's:
+                // what it doesn't copy stays where it is, as with deletes for
+                // good (RMDIR takes an empty folder only). Its files the
+                // mirror copied come with paths of their own when they were
+                // deleted here too.
+                match is_dir {
+                    Some(true) => match not_copied_inside(sftp, &spec.remote, &remote, filter).await {
+                        Some(other) => Err(format!("Kept on the server: it holds {}, which this mirror doesn't copy.", other)),
+                        None => sftp_soft_delete(sftp, &spec.remote, &remote).await,
+                    },
+                    _ => sftp_soft_delete(sftp, &spec.remote, &remote).await,
+                }
             } else {
                 sftp_hard_delete(sftp, &remote).await
             };
@@ -3066,6 +3161,72 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(found, [moved("a.txt", "upload-new"), moved("sub/b.txt", "upload-new")]);
         assert!(lab.stats().is_empty(), "{:?}", lab.stats());
+    }
+
+    async fn remote_tree(lab: &Lab, remote: &str) -> RemoteTree {
+        let mut tree = RemoteTree::default();
+        walk_remote(&lab.sftp, remote, remote, &Filter::default(), &mut tree, &mut 0, &mut HashSet::new(), Tidy::default())
+            .await
+            .unwrap();
+        tree
+    }
+
+    // A run once ended "done, 0 failed" without them.
+    #[tokio::test]
+    async fn folders_that_will_not_list_are_told_and_a_download_needs_its_folder() {
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/closed", Dir), ("/srv/closed/x.txt", File), ("/srv/open.txt", File)], &[], &[]).await;
+        lab.list_denied.lock().unwrap().insert("/srv/closed".to_string());
+        let tree = remote_tree(&lab, "/srv").await;
+        let unlisted: Vec<&str> = tree.unlisted.iter().map(|(rel, _)| rel.as_str()).collect();
+        assert_eq!(unlisted, ["closed"]);
+        assert!(!tree.no_root);
+        assert_eq!(needs_server_folder(Direction::Download, &tree, "/srv"), Ok(()));
+        // The root itself.
+        lab.list_denied.lock().unwrap().insert("/srv".to_string());
+        let tree = remote_tree(&lab, "/srv").await;
+        let err = needs_server_folder(Direction::Download, &tree, "/srv").unwrap_err();
+        assert!(err.starts_with("Couldn't list the server folder /srv: "), "{err}");
+        assert_eq!(needs_server_folder(Direction::Both, &tree, "/srv"), Ok(()));
+        // A mistyped path: fine for a mirror that makes it.
+        let tree = remote_tree(&lab, "/srv/typo").await;
+        assert!(tree.no_root && tree.unlisted.is_empty());
+        assert_eq!(needs_server_folder(Direction::Download, &tree, "/srv/typo"), Err("The server has no folder /srv/typo.".to_string()));
+        assert_eq!(needs_server_folder(Direction::Upload, &tree, "/srv/typo"), Ok(()));
+    }
+
+    // A soft delete moved a folder whole, with what the mirror skips in it.
+    #[tokio::test]
+    async fn a_folder_is_the_mirrors_only_when_all_in_it_is() {
+        let lab = Lab::new(
+            &[
+                ("/srv", Dir),
+                ("/srv/site", Dir),
+                ("/srv/site/index.html", File),
+                ("/srv/site/css", Dir),
+                ("/srv/site/css/a.css", File),
+                ("/srv/site/uploads", Dir),
+                ("/srv/site/uploads/x.png", File),
+                ("/srv/linked", Dir),
+                ("/srv/linked/to", Link),
+            ],
+            &[("/srv/linked/to", "/srv/site/index.html")],
+            &[],
+        )
+        .await;
+        async fn inside(lab: &Lab, excludes: &[&str], includes: &[&str], folder: &str) -> Option<String> {
+            let filter = Filter::new(&spec_with(includes, excludes, "both")).unwrap();
+            not_copied_inside(&lab.sftp, "/srv", folder, &filter).await
+        }
+        assert_eq!(inside(&lab, &[], &[], "/srv/site").await, None);
+        assert_eq!(inside(&lab, &["uploads/"], &[], "/srv/site").await.as_deref(), Some("site/uploads"));
+        assert_eq!(inside(&lab, &["*.css"], &[], "/srv/site").await.as_deref(), Some("site/css/a.css"));
+        assert_eq!(inside(&lab, &[], &["*.html", "*.css"], "/srv/site").await.as_deref(), Some("site/uploads/x.png"));
+        assert_eq!(inside(&lab, &["uploads/"], &[], "/srv/site/css").await, None);
+        // A link, which the mirror never copies.
+        assert_eq!(inside(&lab, &[], &[], "/srv/linked").await.as_deref(), Some("linked/to"));
+        // A folder in it that won't list may hold anything.
+        lab.list_denied.lock().unwrap().insert("/srv/site/css".to_string());
+        assert_eq!(inside(&lab, &[], &[], "/srv/site").await.as_deref(), Some("site/css"));
     }
 
     // The walk of the server leaves the trash out: a local folder of that name

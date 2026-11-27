@@ -725,6 +725,22 @@ function DesktopApp() {
     window.addEventListener("submarine-held-changed", onHeldChanged);
     return () => window.removeEventListener("submarine-held-changed", onHeldChanged);
   }, [refreshServers]);
+  // An open tab's saved mirrors follow its server row: the Mirror panel saves
+  // into it, and the server form or a sync can change or remove them while
+  // the tab is open. A Play on the list from when the tab opened would run
+  // an old mirror and write it back.
+  useEffect(() => {
+    setSessions(prev => {
+      let changed = false;
+      const next = prev.map(s => {
+        const row = s.serverId ? servers.find(r => r.id === s.serverId) : undefined;
+        if (!row || row.mirrors === s.mirrors) return s;
+        changed = true;
+        return { ...s, mirrors: row.mirrors };
+      });
+      return changed ? next : prev;
+    });
+  }, [servers]);
   // Allow what this device holds back for a server (see the review dialog in
   // the server list), then show the list as it now is.
   const allowHeld = useCallback(async (serverId: number, items: string[]) => {

@@ -81,14 +81,14 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
   useEffect(() => {
     if (!isOpen) return;
     const handle = setTimeout(() => {
+      // The backend picks the server before the 200-row limit, so its
+      // commands show however many ran on other servers since.
       invoke<CmdHistoryEntry[]>("cmd_history_list", {
         query: query || null,
         limit: 200,
+        serverId: restrictToServer && filterServerId != null ? filterServerId : null,
       }).then((rows) => {
-        const filtered = restrictToServer && filterServerId != null
-          ? rows.filter(r => r.server_id === filterServerId)
-          : rows;
-        setEntries(filtered);
+        setEntries(rows);
         setSelectedIdx(0);
         setError(null);
       }).catch((e) => {
@@ -117,6 +117,9 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
   }, [selectedIdx, visibleEntries.length]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // A key an input method is using. keyCode 229: Safari's Enter that ends
+    // a word comes after the composition, with isComposing already false.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       e.preventDefault();
       onClose();

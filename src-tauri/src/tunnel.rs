@@ -1179,7 +1179,18 @@ async fn run_remote_forward(
         conn_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_CONNS)),
         stopped: stopped_rx,
     };
-    forwarded_targets.lock().await.insert(server_port, entry);
+    {
+        // One forward per server port: a second would take the first one's
+        // place here, and its refusal by the server would then remove it.
+        let mut targets = forwarded_targets.lock().await;
+        if targets.contains_key(&server_port) {
+            return Err(format!(
+                "A remote forward on server port {} already runs in this session",
+                server_port
+            ));
+        }
+        targets.insert(server_port, entry);
+    }
 
     // Ask the server to start listening, bounded so a server that never
     // answers the global request can't hang the setup forever.
@@ -1192,7 +1203,7 @@ async fn run_remote_forward(
             Ok(r) => r,
             Err(_) => {
                 drop(h);
-                forwarded_targets.lock().await.remove(&server_port);
+                remove_own_forward(&forwarded_targets, server_port, &status).await;
                 return Err(format!(
                     "tcpip-forward request timed out after {:?}",
                     FORWARD_REQUEST_TIMEOUT
@@ -1205,14 +1216,14 @@ async fn run_remote_forward(
             set_state(&app, &status, "listening", None).await;
         }
         Err(russh::Error::RequestDenied) => {
-            forwarded_targets.lock().await.remove(&server_port);
+            remove_own_forward(&forwarded_targets, server_port, &status).await;
             return Err(format!(
                 "Server refused tcpip-forward on {}:{} — check sshd_config's `AllowTcpForwarding` / `GatewayPorts`",
                 bind_addr, server_port
             ));
         }
         Err(e) => {
-            forwarded_targets.lock().await.remove(&server_port);
+            remove_own_forward(&forwarded_targets, server_port, &status).await;
             return Err(format!("tcpip-forward request failed: {}", e));
         }
     }
@@ -1224,7 +1235,7 @@ async fn run_remote_forward(
     // No new connection is taken, and the ones running end. Then, best-effort,
     // the server is told to release the port. Same timeout as the setup
     // request so teardown can't hang.
-    forwarded_targets.lock().await.remove(&server_port);
+    remove_own_forward(&forwarded_targets, server_port, &status).await;
     let _ = stopped_tx.send(true);
     {
         let h = handle.read().await;
@@ -1234,6 +1245,19 @@ async fn run_remote_forward(
         ).await;
     }
     Ok(())
+}
+
+/// Drops this forward's entry, and only it: once it is gone, another forward
+/// may hold the port.
+async fn remove_own_forward(
+    targets: &ForwardedTargets,
+    server_port: u32,
+    status: &Arc<Mutex<TunnelStatus>>,
+) {
+    let mut targets = targets.lock().await;
+    if targets.get(&server_port).is_some_and(|e| Arc::ptr_eq(&e.status, status)) {
+        targets.remove(&server_port);
+    }
 }
 
 /// How long an inbound `forwarded-tcpip` open may wait on the LOCAL connect

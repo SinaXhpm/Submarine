@@ -9985,66 +9985,92 @@ async fn cmd_history_list(
     state: tauri::State<'_, DbState>,
     query: Option<String>,
     limit: Option<u32>,
+    server_id: Option<i32>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
 
     let lim = limit.unwrap_or(200).min(1000) as i64;
     let q = query.unwrap_or_default();
-    let q_trimmed = q.trim();
+    cmd_history_rows(conn, q.trim(), lim, server_id)
+}
 
-    let rows: Vec<serde_json::Value> = if q_trimmed.is_empty() {
-        let mut stmt = conn.prepare(
-            "SELECT id, server_id, server_name, command, ts, exit_code
-             FROM cmd_history
-             ORDER BY ts DESC LIMIT ?1"
-        ).map_err(|e| format!("[DATABASE] CMD_HISTORY_PREP_FAILED: {}", e))?;
-        let mapped = stmt.query_map(rusqlite::params![lim], |row| {
-            Ok(json!({
-                "id": row.get::<_, i64>(0)?,
-                "server_id": row.get::<_, Option<i32>>(1)?,
-                "server_name": row.get::<_, Option<String>>(2)?,
-                "command": row.get::<_, String>(3)?,
-                "ts": row.get::<_, i64>(4)?,
-                "exit_code": row.get::<_, Option<i32>>(5)?,
-            }))
-        }).map_err(|e| format!("[DATABASE] CMD_HISTORY_QUERY_FAILED: {}", e))?;
-        let mut out = Vec::new();
-        for r in mapped {
-            out.push(r.map_err(|e| format!("[DATABASE] CMD_HISTORY_ROW_FAILED: {}", e))?);
+/// The newest `lim` history rows that hold `query` (all when it is empty),
+/// only of server `server_id` when given. The server is picked before the
+/// limit, so a server's commands are found however many ran elsewhere since.
+fn cmd_history_rows(
+    conn: &Connection,
+    query: &str,
+    lim: i64,
+    server_id: Option<i32>,
+) -> Result<Vec<serde_json::Value>, String> {
+    // Escape LIKE metacharacters (%, _, backslash) so the user's raw
+    // input matches literally. Uses `\` as the escape character.
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let like = format!("%{}%", escaped);
+    let mut stmt = conn.prepare(
+        "SELECT id, server_id, server_name, command, ts, exit_code
+         FROM cmd_history
+         WHERE command LIKE ?1 ESCAPE '\\'
+           AND (?2 IS NULL OR server_id = ?2)
+         ORDER BY ts DESC LIMIT ?3"
+    ).map_err(|e| format!("[DATABASE] CMD_HISTORY_PREP_FAILED: {}", e))?;
+    let mapped = stmt.query_map(rusqlite::params![like, server_id, lim], |row| {
+        Ok(json!({
+            "id": row.get::<_, i64>(0)?,
+            "server_id": row.get::<_, Option<i32>>(1)?,
+            "server_name": row.get::<_, Option<String>>(2)?,
+            "command": row.get::<_, String>(3)?,
+            "ts": row.get::<_, i64>(4)?,
+            "exit_code": row.get::<_, Option<i32>>(5)?,
+        }))
+    }).map_err(|e| format!("[DATABASE] CMD_HISTORY_QUERY_FAILED: {}", e))?;
+    let mut out = Vec::new();
+    for r in mapped {
+        out.push(r.map_err(|e| format!("[DATABASE] CMD_HISTORY_ROW_FAILED: {}", e))?);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod cmd_history_tests {
+    use super::*;
+
+    fn ids(rows: &[serde_json::Value]) -> Vec<i64> {
+        rows.iter().map(|r| r["id"].as_i64().unwrap()).collect()
+    }
+
+    #[test]
+    fn one_server_is_picked_before_the_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE cmd_history (id INTEGER PRIMARY KEY AUTOINCREMENT, server_id INTEGER,
+             server_name TEXT, command TEXT NOT NULL, ts INTEGER NOT NULL, exit_code INTEGER)",
+            [],
+        ).unwrap();
+        // Server 1 ran two commands long ago, server 2 many since.
+        let add = |sid: i32, cmd: &str, ts: i64| {
+            conn.execute(
+                "INSERT INTO cmd_history (server_id, command, ts) VALUES (?1, ?2, ?3)",
+                rusqlite::params![sid, cmd, ts],
+            ).unwrap();
+        };
+        add(1, "ls 50%_off", 1);
+        add(1, "uptime", 2);
+        for i in 0..10 {
+            add(2, "df -h", 10 + i);
         }
-        out
-    } else {
-        // Escape LIKE metacharacters (%, _, backslash) so the user's raw
-        // input matches literally. Uses `\` as the escape character.
-        let escaped = q_trimmed
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let like = format!("%{}%", escaped);
-        let mut stmt = conn.prepare(
-            "SELECT id, server_id, server_name, command, ts, exit_code
-             FROM cmd_history
-             WHERE command LIKE ?1 ESCAPE '\\'
-             ORDER BY ts DESC LIMIT ?2"
-        ).map_err(|e| format!("[DATABASE] CMD_HISTORY_PREP_FAILED: {}", e))?;
-        let mapped = stmt.query_map(rusqlite::params![like, lim], |row| {
-            Ok(json!({
-                "id": row.get::<_, i64>(0)?,
-                "server_id": row.get::<_, Option<i32>>(1)?,
-                "server_name": row.get::<_, Option<String>>(2)?,
-                "command": row.get::<_, String>(3)?,
-                "ts": row.get::<_, i64>(4)?,
-                "exit_code": row.get::<_, Option<i32>>(5)?,
-            }))
-        }).map_err(|e| format!("[DATABASE] CMD_HISTORY_QUERY_FAILED: {}", e))?;
-        let mut out = Vec::new();
-        for r in mapped {
-            out.push(r.map_err(|e| format!("[DATABASE] CMD_HISTORY_ROW_FAILED: {}", e))?);
-        }
-        out
-    };
-    Ok(rows)
+        let rows = cmd_history_rows(&conn, "", 5, Some(1)).unwrap();
+        assert_eq!(ids(&rows), vec![2, 1]);
+        assert_eq!(cmd_history_rows(&conn, "", 5, None).unwrap().len(), 5);
+        // The search text still matches literally, inside the one server.
+        assert_eq!(ids(&cmd_history_rows(&conn, "50%_", 5, Some(1)).unwrap()), vec![1]);
+        assert!(cmd_history_rows(&conn, "50%_", 5, Some(2)).unwrap().is_empty());
+        assert!(cmd_history_rows(&conn, "5_%", 5, None).unwrap().is_empty());
+    }
 }
 
 #[tauri::command]
